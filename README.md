@@ -22,6 +22,13 @@ imita os movimentos da cabeça da pessoa.**
 [API](#-api-local) ·
 [Problemas](#-problemas-comuns)
 
+<br/><br/>
+
+<img src="docs/painel.jpg" alt="Painel do sistema: câmera ao vivo, prévia do emoji no OLED seguindo a cabeça da pessoa, pose, cadastro de pessoas, expressões e LEDs" width="720"/>
+
+<sub>O painel em <code>http://localhost:8000</code>: o emoji (à direita) vira a cabeça junto com a
+pessoa na câmera. Rosto e foto desfocados no print por privacidade.</sub>
+
 </div>
 
 ---
@@ -259,6 +266,7 @@ sistema_reconhecimento_facial/
 ├── requirements.txt        # bibliotecas Python do PC
 ├── abrir_painel.bat        # atalho do Windows: instala o que faltar e abre o painel
 ├── CLAUDE.md               # memória do projeto para o Claude Code
+├── docs/painel.jpg         # print do painel usado neste README
 ├── src/                    # firmware do ESP32
 │   ├── main.cpp            # setup() e loop(): junta os módulos
 │   ├── display.h/.cpp      # liga o OLED
