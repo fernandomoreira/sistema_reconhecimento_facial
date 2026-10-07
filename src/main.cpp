@@ -17,6 +17,9 @@
 #include "pc_link.h"
 
 void setup() {
+  // Buffer maior: uma linha M com 8 pessoas tem ~300 letras e chega enquanto
+  // o OLED está sendo desenhado (o buffer padrão de 256 transbordaria)
+  Serial.setRxBufferSize(2048);
   Serial.begin(115200);
   delay(200);
   Serial.println();

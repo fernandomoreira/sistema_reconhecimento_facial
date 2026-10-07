@@ -104,11 +104,13 @@
   .moods{display:flex;gap:8px;flex-wrap:wrap}
 
   /* --- LEDs (só indicação) --- */
-  .leds{display:grid;gap:8px}
-  .led{display:flex;align-items:center;gap:12px;padding:10px 12px;background:#11141a;border:1px solid var(--line);border-radius:12px}
+  .leds{display:grid;gap:8px;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:10px}
+  @media (max-width:520px){ .leds{grid-template-columns:1fr} }
+  .led{display:flex;align-items:center;gap:10px;padding:8px 10px;background:#11141a;border:1px solid var(--line);border-radius:12px;min-width:0}
   .led .dot{width:16px;height:16px;border-radius:50%;background:#2a2f39;flex:none;transition:.15s}
-  .led .name{font-weight:600}
-  .led small{color:var(--muted);margin-left:auto;font-size:12px}
+  .led .txt{display:flex;flex-direction:column;min-width:0}
+  .led .name{font-weight:600;font-size:13px}
+  .led small{color:var(--muted);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .led.on{border-color:color-mix(in srgb,var(--led) 50%,transparent);background:color-mix(in srgb,var(--led) 6%,transparent)}
   .led.on .dot{background:var(--led);box-shadow:0 0 12px var(--led)}
 
@@ -150,10 +152,16 @@
           <div class="off" id="camOff">Abrindo a câmera…</div>
         </div>
         <p class="faces" id="faces">—</p>
+        <!-- LEDs da placa (só indicação), na horizontal embaixo da câmera -->
+        <div class="leds" id="leds" title="Os LEDs são automáticos (indicam o que a câmera está vendo)"></div>
       </div>
       <div>
         <div class="oled"><canvas id="oled" width="128" height="64"></canvas></div>
         <p class="oled-name" id="oledName">—</p>
+        <div class="row" style="flex-wrap:nowrap">
+          <label for="nSel" style="color:var(--muted);font-size:13px;white-space:nowrap">🙂 Emojis no visor</label>
+          <select id="nSel" title="Um emoji para cada pessoa na câmera, até este número" style="flex:1 1 0;min-width:0"></select>
+        </div>
         <div class="meters" id="meters"></div>
         <div class="row">
           <button class="btn" id="calBtn" title="Olhe reto para a câmera e clique">🎯 Calibrar (olhe reto)</button>
@@ -195,13 +203,6 @@
     <p class="hint">No <b>Automático</b>: 😮 surpreso quando alguém aparece, 😄 feliz para pessoas
       cadastradas (o nome aparece no visor) e 🤨 curioso para desconhecidos. Sem ninguém na câmera
       ele procura (olha para os lados) e depois de 8 s dorme 😴.</p>
-  </section>
-
-  <!-- LEDs -->
-  <section class="card">
-    <h2>💡 LEDs da placa</h2>
-    <div class="leds" id="leds"></div>
-    <p class="hint">Os LEDs são automáticos (indicam o que a câmera está vendo).</p>
   </section>
 
   <!-- ===================== Informações técnicas ===================== -->
@@ -287,11 +288,13 @@ const W = 128, H = 64;
 const FRAME_MS = 33, LOST_MS = 1500, SEARCH_MS = 8000;
 const EYE_AZ = 0.38, EYE_EL = -0.18, EYE_RX = 0.17, EYE_RY = 0.22, VIS = 0.08, DEG = Math.PI/180;
 const ST_DORMINDO = 0, ST_PROCURANDO = 1, ST_SEGUINDO = 2;
+const FACE_MAX = 8;
+const pose0 = () => ({x:64, y:36, yaw:0, pitch:-0.35, roll:0.15, r:22});
 const F = {
-  cur: {x:64, y:36, yaw:0, pitch:-0.35, roll:0.15, r:22},
-  tgt: {x:64, y:36, yaw:0, pitch:-0.35, roll:0.15, r:22},
-  st: ST_DORMINDO, stSince: 0, lastLook: 0, mood: M_NEUTRO, name: "",
-  lastFrame: 0, nextBlink: 3000,
+  slots: Array.from({length: FACE_MAX}, (_, i) =>
+    ({cur: pose0(), tgt: pose0(), mood: M_NEUTRO, known: false, nextBlink: 3000 + i*700})),
+  count: 1, names: Array(FACE_MAX).fill(""),
+  st: ST_DORMINDO, stSince: 0, lastLook: 0, lastFrame: 0,
 };
 const pix = new Uint8Array(W*H);
 let texts = [];   // textos do quadro (desenhados por cima com a fonte do navegador)
@@ -406,55 +409,102 @@ function drawMouth(em){
     default:         curve(0, 0.26, 0.42, 0.05, 0, true);
   }
 }
-function eyeOpen(now){
-  if (now >= F.nextBlink) {
-    const d = now - F.nextBlink;
+
+// Layout: onde fica o emoji i quando há n na tela (n >= 2) — igual a cellFor() do face.cpp
+function cellFor(n, i){
+  const rows = n <= 4 ? 1 : 2, cols = rows === 1 ? n : Math.floor((n + 1)/2);
+  const row = Math.floor(i/cols), col = i % cols;
+  const inRow = row === 0 ? Math.min(n, cols) : n - cols;
+  const cw = W/cols, ch = H/rows, x0 = (W - inRow*cw)/2;
+  const c = {cx: x0 + cw*(col + 0.5), w: cw};
+  if (rows === 1) Object.assign(c, {cy: 28, rmax: Math.min(cw/2 - 1, 22), label: true});
+  else            Object.assign(c, {cy: ch*(row + 0.5), rmax: Math.min(cw, ch)/2 - 1, label: false});
+  return c;
+}
+function targetFor(f, n, i){
+  const t = {yaw: f.yaw*DEG, pitch: f.pitch*DEG, roll: f.roll*DEG};
+  if (n === 1) {
+    t.r = 18 + f.size*0.10;
+    t.x = W/2 + f.x/100*(W/2 - t.r - 2);
+    t.y = H/2 + f.y/100*8;
+  } else {
+    const c = cellFor(n, i);
+    Object.assign(t, {r: c.rmax*(0.75 + 0.25*f.size/100), x: c.cx, y: c.cy});
+  }
+  return t;
+}
+
+function eyeOpen(s, now){
+  if (now >= s.nextBlink) {
+    const d = now - s.nextBlink;
     if (d < 160) return Math.abs(d - 80)/80;
-    F.nextBlink = now + 2000 + Math.random()*3500;
+    s.nextBlink = now + 2000 + Math.random()*3500;
   }
   return 1;
 }
-const effMood = () => F.st === ST_SEGUINDO ? F.mood : F.st === ST_PROCURANDO ? M_CURIOSO : M_NEUTRO;
+const effMood = s => F.st === ST_SEGUINDO ? s.mood : F.st === ST_PROCURANDO ? M_CURIOSO : M_NEUTRO;
 
-function faceLook(t){
-  const r = 18 + t.size*0.10;
-  Object.assign(F.tgt, {r, x: W/2 + t.x/100*(W/2 - r - 2), y: H/2 + t.y/100*8,
-    yaw: t.yaw*DEG, pitch: t.pitch*DEG, roll: t.roll*DEG});
-  F.mood = t.mood; F.lastLook = performance.now();
+function faceLookMany(list){
+  const n = Math.min(list.length, FACE_MAX);
+  for (let i = 0; i < n; i++) {
+    const s = F.slots[i];
+    s.tgt = targetFor(list[i], n, i);
+    s.mood = list[i].mood; s.known = !!list[i].known;
+    F.names[i] = oledName(list[i].name || "");
+    if (i >= F.count) { s.cur = {...s.tgt, r: 0}; }   // emoji novo: nasce pequeno e cresce
+  }
+  for (let i = n; i < FACE_MAX; i++) F.names[i] = "";
+  F.count = n; F.lastLook = performance.now();
   if (F.st !== ST_SEGUINDO) { F.st = ST_SEGUINDO; F.stSince = F.lastLook; }
 }
-function faceIdle(){
-  if (F.st === ST_SEGUINDO) { F.st = ST_PROCURANDO; F.stSince = performance.now(); }
-}
+function lose(now){ F.st = ST_PROCURANDO; F.stSince = now; F.count = 1; }
+function faceIdle(){ if (F.st === ST_SEGUINDO) lose(performance.now()); }
 function faceUpdate(now, dt){
-  if (F.st === ST_SEGUINDO && now - F.lastLook > LOST_MS) { F.st = ST_PROCURANDO; F.stSince = now; }
+  if (F.st === ST_SEGUINDO && now - F.lastLook > LOST_MS) lose(now);
   if (F.st === ST_PROCURANDO && now - F.stSince > SEARCH_MS) { F.st = ST_DORMINDO; F.stSince = now; }
-  const t = now/1000;
-  if (F.st === ST_PROCURANDO) F.tgt = {x:64, y:32, yaw:0.75*Math.sin(t*1.6), pitch:0.12*Math.sin(t*0.9), roll:0, r:22};
-  else if (F.st === ST_DORMINDO) F.tgt = {x:64, y:36, yaw:0, pitch:-0.35 + 0.05*Math.sin(t*1.4), roll:0.15, r:22};
+  const t = now/1000, s0 = F.slots[0];
+  if (F.st === ST_PROCURANDO) s0.tgt = {x:64, y:32, yaw:0.75*Math.sin(t*1.6), pitch:0.12*Math.sin(t*0.9), roll:0, r:22};
+  else if (F.st === ST_DORMINDO) s0.tgt = {x:64, y:36, yaw:0, pitch:-0.35 + 0.05*Math.sin(t*1.4), roll:0.15, r:22};
   const k = 1 - Math.exp(-dt*(F.st === ST_DORMINDO ? 2.5 : 12));
-  for (const key in F.cur) F.cur[key] += (F.tgt[key] - F.cur[key])*k;
+  for (let i = 0; i < F.count; i++) {
+    const s = F.slots[i];
+    for (const key in s.cur) s.cur[key] += (s.tgt[key] - s.cur[key])*k;
+  }
 }
-function faceDraw(now){
-  pix.fill(0); texts = [];
-  const c = F.cur;
+function drawHead(s, now){
+  const c = s.cur;
   pcx = c.x; pcy = c.y; pr = c.r;
   cY = Math.cos(c.yaw); sY = Math.sin(c.yaw); cP = Math.cos(c.pitch); sP = Math.sin(c.pitch);
   cR = Math.cos(c.roll); sR = Math.sin(c.roll);
   const cx = lround(c.x), cy = lround(c.y), r = lround(c.r);
+  if (r < 3) return;
   fillCircle(cx, cy, r, 1); fillCircle(cx, cy, r - 2, 0);
-  const em = effMood(), open = eyeOpen(now);
+  const em = effMood(s), open = eyeOpen(s, now);
   drawBrows(em); drawEye(-EYE_AZ, open, em); drawEye(EYE_AZ, open, em); drawMouth(em);
+}
+function faceDraw(now){
+  pix.fill(0); texts = [];
+  for (let i = 0; i < F.count; i++) drawHead(F.slots[i], now);
+  const c = F.slots[0].cur, cx = lround(c.x), cy = lround(c.y), r = lround(c.r);
   if (F.st === ST_DORMINDO) {
     const p1 = (now % 2400)/2400, p2 = (p1 + 0.5) % 1;
     texts.push(["z", 1, cx + r*0.7 + p1*6, cy - r*0.6 - p1*10]);
     texts.push(["Z", 2, cx + r*0.9 + p2*6, cy - r - p2*10]);
   } else if (F.st === ST_PROCURANDO && Math.floor(now/600) % 2 === 0) {
     texts.push(["?", 2, cx + r + 4, cy - r]);
-  } else if (F.st === ST_SEGUINDO && F.name) {
-    const w = F.name.length*6 - 1, x = cx >= W/2 ? 1 : W - 1 - w;
+  } else if (F.st === ST_SEGUINDO && F.count === 1 && F.names[0]) {
+    const w = F.names[0].length*6 - 1, x = cx >= W/2 ? 1 : W - 1 - w;
     for (let y = H - 9; y < H; y++) hline(x - 1, y, w + 2, 0);
-    texts.push([F.name, 1, x, H - 8]);
+    texts.push([F.names[0], 1, x, H - 8]);
+  } else if (F.st === ST_SEGUINDO && F.count > 1) {
+    for (let i = 0; i < F.count; i++) {
+      const cell = cellFor(F.count, i);
+      if (!cell.label || !F.names[i]) continue;
+      const name = F.names[i].slice(0, Math.floor((cell.w - 2)/6));
+      const w = name.length*6 - 1, x = lround(cell.cx - w/2);
+      for (let y = H - 9; y < H; y++) hline(x - 1, y, w + 2, 0);
+      texts.push([name, 1, x, H - 8]);
+    }
   }
   blit();
 }
@@ -521,7 +571,9 @@ function oledName(s){
 function renderAlvo(a){
   A = a;
   const t = a && a.target;
-  if (t) { faceLook(t); F.name = oledName(t.name || ""); } else { faceIdle(); }
+  const tl = a && a.targets || [];
+  if (a && document.activeElement !== $("nSel")) $("nSel").value = String(a.maxFaces);
+  if (tl.length) faceLookMany(tl); else faceIdle();
   renderMeters(t);
 
   const faces = a ? a.faces : [];
@@ -530,8 +582,10 @@ function renderAlvo(a){
         `${i === 0 ? "🎯 " : ""}<b>${esc(f.name || "Desconhecido")}</b> (${Math.round(f.score*100)}%)`).join(", ");
 
   const st = F.st, m = t ? MOODS[t.mood] : null;
+  const who = x => x.name ? `<b>${esc(x.name)}</b>` : "<b>desconhecido</b>";
   $("oledName").innerHTML =
-      st === ST_SEGUINDO   ? `Seguindo ${t && t.name ? `<b>${esc(t.name)}</b>` : "<b>desconhecido</b>"} · ${m ? m[0] + " " + m[1] : ""}`
+      st === ST_SEGUINDO && tl.length > 1 ? `${tl.length} emojis: ` + tl.map(x => `${MOODS[x.mood][0]} ${who(x)}`).join(" · ")
+    : st === ST_SEGUINDO   ? `Seguindo ${t ? who(t) : "<b>desconhecido</b>"} · ${m ? m[0] + " " + m[1] : ""}`
     : st === ST_PROCURANDO ? "🔎 Procurando alguém…"
     : "😴 Dormindo (ninguém na câmera)";
 
@@ -557,9 +611,20 @@ function buildMoods(){
   [...$("moods").children].forEach(b => b.onclick = () => post(`/api/humor?id=${b.dataset.id}`, "Falha ao mudar a expressão"));
 }
 buildMoods();
-$("leds").innerHTML = LEDS.map(([n, d, c]) => `<div class="led" style="--led:${c}"><span class="dot"></span><span class="name">${n}</span><small>${d}</small></div>`).join("");
+$("leds").innerHTML = LEDS.map(([n, d, c]) => `<div class="led" style="--led:${c}" title="${n}: ${d}"><span class="dot"></span><span class="txt"><span class="name">${n}</span><small>${d}</small></span></div>`).join("");
 $("camSel").onchange = e => post(`/api/camera?index=${e.target.value}`, "Falha ao trocar a câmera");
 $("scanBtn").onclick = () => post("/api/cameras/buscar", "Falha ao buscar câmeras");
+
+// Quantos emojis no visor: um por pessoa na câmera, até o número escolhido
+const N_LABELS = {1: "1 emoji (só a pessoa mais perto)", 4: "4 emojis (uma fila, com nomes)",
+                  8: `${FACE_MAX} emojis (todos que cabem)`};
+$("nSel").innerHTML = Array.from({length: FACE_MAX}, (_, i) => i + 1).map(n =>
+  `<option value="${n}">${N_LABELS[n] || `${n} emojis${n > 4 ? " (duas filas)" : ""}`}</option>`).join("");
+$("nSel").onchange = async e => {
+  const n = e.target.value;
+  if (await post(`/api/emojis?n=${n}`, "Falha ao mudar o número de emojis"))
+    toast(`Até ${n} emoji${n > 1 ? "s" : ""} no visor`, true);
+};
 
 // Lista de câmeras (só redesenha quando muda, para não fechar o menu aberto)
 function renderCams(v){
@@ -707,7 +772,11 @@ function render(s){
 async function pollStatus(){
   try {
     const r = await fetch("/api/status", {cache:"no-store"});
-    serverOk = true; render(await r.json());
+    const s = await r.json();
+    // O programa reiniciou (ou voltou do offline): o vídeo antigo morreu sem
+    // avisar o <img>, então abre de novo
+    if (!serverOk || (S && S.boot !== s.boot)) openVideo();
+    serverOk = true; render(s);
   } catch(e){ serverOk = false; render(S); }
 }
 async function pollAlvo(){

@@ -3,17 +3,23 @@
 //
 // O PC manda uma linha de texto por comando (terminada em '\n'):
 //   STATUS                                  -> só pede o estado
-//   L <x> <y> <yaw> <pitch> <roll> <size> <mood>
-//                                           -> tem alguém na câmera (até ~20x/s).
+//   M <n> { <x> <y> <yaw> <pitch> <roll> <size> <mood> <known> } x n
+//                                           -> n pessoas na câmera (1..8), da
+//                                              esquerda para a direita (até ~20x/s).
 //                                              Sem resposta, para não encher a serial
+//   L <x> <y> <yaw> <pitch> <roll> <size> <mood>
+//                                           -> atalho para uma pessoa só (sem resposta)
 //   IDLE                                    -> ninguém na câmera (sem resposta)
-//   NAME <texto>                            -> nome da pessoa reconhecida
-//                                              (bytes CP437, até 20; vazio = apaga)
+//   NAMES <nome1>|<nome2>|...               -> nomes das pessoas, na ordem do M
+//                                              (bytes CP437, até 20 cada; vazio = desconhecida)
+//   NAME <texto>                            -> nome só da 1ª pessoa
 //
 // Respostas começam com '@' seguido de JSON:
-//   @{"fw":"rosto-esp32","ver":1,"uptime":12,"oled":true,"state":"seguindo",
-//     "mood":1,"name":"Ana","fps":29,"looks":350,"leds":[1,1,0]}
-//   (state = seguindo | procurando | dormindo; looks conta os comandos L)
+//   @{"fw":"rosto-esp32","ver":2,"uptime":12,"oled":true,"state":"seguindo",
+//     "count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","",...],
+//     "fps":29,"looks":350,"leds":[1,1,1]}
+//   (state = seguindo | procurando | dormindo; count = emojis na tela;
+//    looks conta os comandos L/M)
 //   @{"error":"mensagem"}
 // Linhas sem '@' são apenas mensagens de log.
 // ===========================================================================

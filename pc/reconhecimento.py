@@ -32,6 +32,7 @@ Rotas da API local:
     POST /api/espelhar?on=0|1         espelha a imagem (o emoji imita como espelho)
     POST /api/camera?index=0..9       troca de câmera
     POST /api/cameras/buscar          procura de novo as câmeras ligadas ao PC
+    POST /api/emojis?n=1..8           quantos emojis (um por pessoa) cabem no visor
     POST /api/port?name=COM12|auto    escolhe a porta serial
     POST /api/release | /api/resume   solta / retoma a porta COM (para gravar firmware)
 """
@@ -109,6 +110,8 @@ ENROLL_TIMEOUT_S = 20
 ENROLL_MIN_W = 0.12     # largura mínima do rosto (fração da imagem) para cadastrar
 MAX_SAMPLES = 60        # máximo de amostras guardadas por pessoa
 NAME_MAX = 20           # cabe numa linha do OLED
+FACE_MAX = 8            # emojis que cabem no OLED (= FACE_MAX de src/face.h)
+BOOT_ID = f"{time.time():.3f}"  # identifica esta execução do programa
 
 # Expressões (a mesma ordem de src/face.h e pc/painel.html)
 MOODS = ["Neutro", "Feliz", "Curioso", "Surpreso", "Bravo", "Triste"]
@@ -145,7 +148,7 @@ def to_oled_text(text, limit=NAME_MAX):
                 b = base.encode("cp437") if base else b"?"
             except UnicodeEncodeError:
                 b = b"?"
-        if not b or b[0] < 0x20 or b in (b'"', b"\\"):
+        if not b or b[0] < 0x20 or b in (b'"', b"\\", b"|"):  # '|' separa os nomes
             b = b"?"
         out += b
     out = bytes(out[:limit]).rstrip()
@@ -577,6 +580,7 @@ class Vision:
         self.fps = 0.0
         self.mirror = True
         self.mood_override = -1
+        self.max_faces = FACE_MAX    # quantos emojis no visor (1..FACE_MAX)
         # Calibração: valores de r e t com a pessoa olhando reto para a câmera
         self.calib = {"r": 0.0, "t": 0.55}
 
@@ -584,10 +588,9 @@ class Vision:
         self.visible = []
         self.next_id = 1
         self.last_seen = 0.0         # última vez em que havia um rosto
-        self.surprise_until = 0.0
-        self.pose = None             # pose suavizada (dict) da pessoa seguida
         self.raw = None              # (r, t) sem calibração, para o botão Calibrar
-        self.target = None           # o que vai para a placa (dict) ou None
+        self.target = None           # pessoa principal (a mais perto): medidores e Calibrar
+        self.targets = []            # o que vai para a placa: 1 dict por emoji, da esquerda p/ direita
         self.enroll = None
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -671,7 +674,7 @@ class Vision:
         with self.lock:
             self.visible = []
             self.target = None
-            self.pose = None
+            self.targets = []
 
     def _run(self):
         cap = None
@@ -741,8 +744,12 @@ class Vision:
                 best.update(box=box, face=f, last=now)
                 visible.append(best)
             else:
+                # Surpresa: alguém apareceu depois de um tempo sem ninguém, ou
+                # chegou uma pessoa nova enquanto outras já estavam na câmera
+                surprise = now - self.last_seen > ABSENT_S or bool(visible)
                 visible.append({"id": self.next_id, "box": box, "face": f, "first": now, "last": now,
-                                "votes": deque(maxlen=5), "name": "", "score": 0.0, "since": RECOG_EVERY})
+                                "votes": deque(maxlen=5), "name": "", "score": 0.0, "since": RECOG_EVERY,
+                                "pose": None, "surprise": now + SURPRISE_S if surprise else 0.0})
                 self.next_id += 1
         # Os que sumiram há pouco continuam guardados (o detector às vezes pisca)
         self.tracks = visible + [t for t in free if now - t["last"] < TRACK_KEEP_S]
@@ -756,36 +763,48 @@ class Vision:
         faces = [] if faces is None else list(faces)
         visible = self._update_tracks(faces, now)
 
-        # Reconhece (só alguns rostos por quadro, para não pesar)
-        for tr in visible[:MAX_RECOG]:
+        # Reconhece no máximo MAX_RECOG rostos por quadro (os que esperam há mais
+        # tempo primeiro): com muita gente, todos são reconhecidos, só que mais devagar
+        for tr in visible:
             tr["since"] += 1
-            if tr["since"] >= RECOG_EVERY:
-                feat, _ = self._feature(frame, tr["face"])
-                name, score = self.db.match(feat)
-                tr["votes"].append(name)
-                tr["score"] = score
-                tr["since"] = 0
-                tr["name"] = Counter(tr["votes"]).most_common(1)[0][0]
+        due = sorted((t for t in visible if t["since"] >= RECOG_EVERY), key=lambda t: -t["since"])
+        for tr in due[:MAX_RECOG]:
+            feat, _ = self._feature(frame, tr["face"])
+            name, score = self.db.match(feat)
+            tr["votes"].append(name)
+            tr["score"] = score
+            tr["since"] = 0
+            tr["name"] = Counter(tr["votes"]).most_common(1)[0][0]
 
         target = visible[0] if visible else None  # o maior rosto = o mais perto
         if target is not None:
-            if now - self.last_seen > ABSENT_S:
-                self.surprise_until = now + SURPRISE_S
             self.last_seen = now
-        self._update_target(target, w, h, now)
+        self._update_targets(visible, w, h, now)
         self._enroll_step(frame, visible, now)
         self._publish(frame, visible, target)
 
-    def _update_target(self, tr, w, h, now):
-        if tr is None:
+    def _update_targets(self, visible, w, h, now):
+        """Um alvo por emoji: as max_faces pessoas mais perto, da esquerda para a direita."""
+        if not visible:
             with self.lock:
                 self.visible = []
                 self.target = None
-                self.pose = None
+                self.targets = []
             return
+        if visible[0]["face"] is not None:
+            r, t, _ = head_pose(visible[0]["face"])
+            self.raw = (r, t)
+        chosen = visible[:self.max_faces]            # já vêm do maior para o menor
+        main = self._target_for(chosen[0], w, h, now)
+        targets = [main] + [self._target_for(tr, w, h, now) for tr in chosen[1:]]
+        targets.sort(key=lambda t: t["x"])
+        with self.lock:
+            self.target = main
+            self.targets = targets
+
+    def _target_for(self, tr, w, h, now):
         x, y, fw, fh = tr["box"]
         r, t, roll = head_pose(tr["face"])
-        self.raw = (r, t)
         raw = {
             "x": ((x + fw / 2) / w * 2 - 1) * 100,
             "y": ((y + fh / 2) / h * 2 - 1) * 100,
@@ -795,22 +814,24 @@ class Vision:
             "roll": roll,
             "size": (fw / w - 0.10) / (0.40 - 0.10) * 100,
         }
-        p = self.pose
+        p = tr["pose"]   # cada pessoa tem a sua suavização
         if p is None:
             p = raw
         else:
             p = {k: p[k] + (raw[k] - p[k]) * SMOOTH for k in raw}
+        tr["pose"] = p
 
         if self.mood_override >= 0:
             mood = self.mood_override
-        elif now < self.surprise_until:
+        elif now < tr["surprise"]:
             mood = MOOD_SURPRESO
         elif tr["name"]:
             mood = MOOD_FELIZ
         else:
             mood = MOOD_CURIOSO
 
-        target = {
+        return {
+            "id": tr["id"],
             "x": int(round(clamp(p["x"], -100, 100))),
             "y": int(round(clamp(p["y"], -100, 100))),
             "yaw": int(round(clamp(p["yaw"], -60, 60))),
@@ -819,11 +840,9 @@ class Vision:
             "size": int(round(clamp(p["size"], 0, 100))),
             "mood": mood,
             "name": tr["name"],
+            "known": bool(tr["name"]),
             "score": round(tr["score"], 3),
         }
-        with self.lock:
-            self.pose = p
-            self.target = target
 
     # ----- cadastro -----
     def start_enroll(self, name):
@@ -872,11 +891,13 @@ class Vision:
     # ----- imagem para o painel -----
     def _publish(self, frame, visible, target):
         img = frame  # desenha por cima (o quadro não é mais usado)
+        with self.lock:
+            on_oled = {t["id"] for t in self.targets}   # rostos que viram emoji: borda grossa
         for tr in visible:
             x, y, fw, fh = (int(v) for v in tr["box"])
             known = bool(tr["name"])
             color = (94, 197, 34) if known else (11, 158, 245)  # verde / laranja (BGR)
-            thick = 3 if tr is target else 1
+            thick = 3 if tr["id"] in on_oled else 1
             cv2.rectangle(img, (x, y), (x + fw, y + fh), color, thick)
             label = ascii_text(tr["name"]) if known else "Desconhecido"
             label += f"  {tr['score'] * 100:.0f}%"
@@ -918,15 +939,17 @@ class Vision:
         self.calib = {"r": float(self.raw[0]), "t": float(self.raw[1])}
         return True
 
-    def get_target(self):
+    def get_targets(self):
         with self.lock:
-            return dict(self.target) if self.target else None
+            return [dict(t) for t in self.targets]
 
     def light(self):
         with self.lock:
             en = self.enroll
             return {
                 "target": dict(self.target) if self.target else None,
+                "targets": [dict(t) for t in self.targets],
+                "maxFaces": self.max_faces,
                 "faces": list(self.visible),
                 "enroll": None if not en else {
                     "name": en["name"], "state": en["state"], "msg": en["msg"],
@@ -949,6 +972,7 @@ class Vision:
             "mirror": self.mirror,
             "moodOverride": self.mood_override,
             "moods": MOODS,
+            "faceMax": FACE_MAX,
             "calib": {k: round(v, 3) for k, v in self.calib.items()},
             "threshold": MATCH_THRESHOLD,
         })
@@ -959,8 +983,8 @@ class Vision:
 # Envio para a placa
 # ===========================================================================
 def sender(board, vision):
-    """Manda a pose ~20x/s (L ...) ou IDLE quando não há ninguém; e o NAME
-    sempre que o nome no visor da placa for diferente do desejado."""
+    """Manda as poses ~20x/s (M n ...) ou IDLE quando não há ninguém; e o
+    NAMES sempre que os nomes na placa forem diferentes dos desejados."""
     last_idle = 0.0
     last_name_try = 0.0
     while True:
@@ -968,19 +992,24 @@ def sender(board, vision):
         if not board.answering():
             continue
         now = time.time()
-        tgt = vision.get_target()
+        tgts = vision.get_targets()
 
-        data, shown = to_oled_text(tgt["name"] if tgt else "")
+        # Nomes na mesma ordem dos emojis; os que sobram ficam vazios
+        texts = [to_oled_text(t["name"]) for t in tgts] + [(b"", "")] * (FACE_MAX - len(tgts))
+        want = [shown for _, shown in texts]
         with board.lock:
-            on_board = board.status.get("name") if board.status else None
-        if on_board is not None and on_board != shown and now - last_name_try > 1.0:
+            on_board = board.status.get("names") if board.status else None
+        if on_board is not None and list(on_board) != want and now - last_name_try > 1.0:
             last_name_try = now
-            board.command(b"NAME " + data if data else b"NAME", lambda r: "name" in r)
+            data = b"|".join(d for d, _ in texts[:len(tgts)])
+            board.command(b"NAMES " + data if data else b"NAMES", lambda r: "names" in r)
             continue
 
-        if tgt:
-            board.send(f"L {tgt['x']} {tgt['y']} {tgt['yaw']} {tgt['pitch']} {tgt['roll']} "
-                       f"{tgt['size']} {tgt['mood']}")
+        if tgts:
+            parts = [f"M {len(tgts)}"] + [
+                f"{t['x']} {t['y']} {t['yaw']} {t['pitch']} {t['roll']} {t['size']} {t['mood']} "
+                f"{int(t['known'])}" for t in tgts]
+            board.send(" ".join(parts))
         elif now - last_idle > 1.0:
             last_idle = now
             board.send("IDLE")
@@ -1007,6 +1036,7 @@ def make_handler(board, vision, db):
             s = board.snapshot()
             s["vision"] = vision.snapshot()
             s["people"] = db.list()
+            s["boot"] = BOOT_ID  # muda quando o programa reinicia: o painel reabre o vídeo
             return s
 
         def _stream(self):
@@ -1089,6 +1119,11 @@ def make_handler(board, vision, db):
                 vision.want_cam = int(i)
             elif path == "/api/cameras/buscar":
                 vision.request_scan()
+            elif path == "/api/emojis":
+                n = q.get("n", "")
+                if not n.isdigit() or not 1 <= int(n) <= FACE_MAX:
+                    return self._send(400, {"error": f"n deve ser de 1 a {FACE_MAX}"})
+                vision.max_faces = int(n)
             elif path == "/api/port":
                 name = q.get("name", "auto")
                 board.wanted = None if name.lower() == "auto" else name

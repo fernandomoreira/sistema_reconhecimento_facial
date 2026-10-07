@@ -1,10 +1,14 @@
 // ===========================================================================
-// face.cpp - animação e desenho do emoji que segue a pessoa
+// face.cpp - animação e desenho dos emojis que seguem as pessoas
 //
 // Olhos, sobrancelhas e boca são pontos numa esfera (a cabeça). Cada ponto é
 // dado por dois ângulos: az (para os lados) e el (para cima/baixo, positivo
 // = para baixo). A esfera é girada por pitch, yaw e roll e projetada na tela;
 // pontos que ficam "atrás" da cabeça não são desenhados.
+//
+// Cada pessoa tem o seu "slot" (posição na tela, suavização e piscada
+// próprias). Com mais de uma pessoa a tela é dividida em células: uma fila
+// para 2 a 4 pessoas, duas filas para 5 a 8.
 //
 // IMPORTANTE: pc/painel.html tem uma cópia em JavaScript deste desenho.
 // ===========================================================================
@@ -37,17 +41,30 @@ struct Pose {
   float r;                 // raio da cabeça (pixels)
 };
 
-static Pose cur = {64, 36, 0, -0.35f, 0.15f, 22};  // o que está na tela
-static Pose tgt = cur;                             // para onde está indo
+struct Slot {
+  Pose     cur, tgt;   // o que está na tela / para onde está indo
+  uint8_t  mood;
+  bool     known;
+  uint32_t nextBlink;
+};
+
+// Célula da tela onde fica cada emoji quando há mais de um
+struct Cell {
+  float cx, cy;   // centro
+  float w;        // largura (para caber o nome)
+  float rmax;     // maior raio de cabeça que cabe
+  bool  label;    // tem espaço para o nome embaixo?
+};
+
+static Slot     slots[FACE_MAX];
+static uint8_t  count = 1;  // emojis na tela (dormindo/procurando = 1)
+static char     names[FACE_MAX][FACE_NAME_MAX + 1];
 
 static St       st       = St::DORMINDO;
 static uint32_t stSince  = 0;
 static uint32_t lastLook = 0;
-static uint8_t  mood     = MOOD_NEUTRO;
-static char     name[FACE_NAME_MAX + 1] = "";
 
 static uint32_t lastFrame = 0;
-static uint32_t nextBlink = 3000;
 static uint32_t frames = 0, fpsT0 = 0;
 static uint8_t  fps = 0;
 static int      ledMask = -1;  // LEDs acesos (bits), -1 = ainda não definido
@@ -192,29 +209,77 @@ static void drawMouth(uint8_t em) {
 }
 
 // ===========================================================================
+// Layout: onde fica o emoji i quando há n na tela (n >= 2)
+// ===========================================================================
+static Cell cellFor(uint8_t n, uint8_t i) {
+  uint8_t rows  = n <= 4 ? 1 : 2;
+  uint8_t cols  = rows == 1 ? n : (n + 1) / 2;
+  uint8_t row   = i / cols, col = i % cols;
+  uint8_t inRow = row == 0 ? min(n, cols) : n - cols;  // a 2ª fila pode ter menos
+  float   cw    = (float)SCREEN_W / cols;
+  float   ch    = (float)SCREEN_H / rows;
+  float   x0    = (SCREEN_W - inRow * cw) / 2;         // centraliza a fila
+  Cell c;
+  c.cx = x0 + cw * (col + 0.5f);
+  c.w  = cw;
+  if (rows == 1) {   // uma fila: cabeça um pouco para cima, nome embaixo
+    c.cy    = 28;
+    c.rmax  = min(cw / 2 - 1, 22.0f);
+    c.label = true;
+  } else {
+    c.cy    = ch * (row + 0.5f);
+    c.rmax  = min(cw, ch) / 2 - 1;
+    c.label = false;
+  }
+  return c;
+}
+
+// Converte o que o PC mandou em posição/tamanho na tela
+static Pose targetFor(const FaceIn& f, uint8_t n, uint8_t i) {
+  Pose t;
+  t.yaw   = f.yaw * DEG;
+  t.pitch = f.pitch * DEG;
+  t.roll  = f.roll * DEG;
+  if (n == 1) {      // sozinho: anda pela tela inteira
+    t.r = 18 + f.size * 0.10f;                         // raio de 18 a 28 pixels
+    t.x = SCREEN_W / 2 + f.x / 100.0f * (SCREEN_W / 2 - t.r - 2);
+    t.y = SCREEN_H / 2 + f.y / 100.0f * 8;
+  } else {           // vários: cada um na sua célula
+    Cell c = cellFor(n, i);
+    t.r = c.rmax * (0.75f + 0.25f * f.size / 100.0f);
+    t.x = c.cx;
+    t.y = c.cy;
+  }
+  return t;
+}
+
+// ===========================================================================
 // Animação
 // ===========================================================================
-static float eyeOpen(uint32_t now) {
-  if (now >= nextBlink) {
-    uint32_t d = now - nextBlink;
+static float eyeOpen(Slot& s, uint32_t now) {
+  if (now >= s.nextBlink) {
+    uint32_t d = now - s.nextBlink;
     if (d < 160) return fabsf((float)d - 80.0f) / 80.0f;  // fecha e abre em 160 ms
-    nextBlink = now + random(2000, 5500);
+    s.nextBlink = now + random(2000, 5500);
   }
   return 1.0f;
 }
 
-static uint8_t effectiveMood() {
-  if (st == St::SEGUINDO)   return mood;
+static uint8_t effectiveMood(const Slot& s) {
+  if (st == St::SEGUINDO)   return s.mood;
   if (st == St::PROCURANDO) return MOOD_CURIOSO;
   return MOOD_NEUTRO;
 }
 
+static void lose(uint32_t now) {
+  st      = St::PROCURANDO;
+  stSince = now;
+  count   = 1;   // procura/dorme com um emoji só
+  Serial.println("[ROSTO] Ninguem na camera: procurando...");
+}
+
 static void updateTargets(uint32_t now) {
-  if (st == St::SEGUINDO && now - lastLook > LOST_MS) {
-    st = St::PROCURANDO;
-    stSince = now;
-    Serial.println("[ROSTO] Pessoa sumiu: procurando...");
-  }
+  if (st == St::SEGUINDO && now - lastLook > LOST_MS) lose(now);
   if (st == St::PROCURANDO && now - stSince > SEARCH_MS) {
     st = St::DORMINDO;
     stSince = now;
@@ -223,27 +288,31 @@ static void updateTargets(uint32_t now) {
 
   float t = now / 1000.0f;
   if (st == St::PROCURANDO) {        // olha para os lados
-    tgt = {64, 32, 0.75f * sinf(t * 1.6f), 0.12f * sinf(t * 0.9f), 0, 22};
+    slots[0].tgt = {64, 32, 0.75f * sinf(t * 1.6f), 0.12f * sinf(t * 0.9f), 0, 22};
   } else if (st == St::DORMINDO) {   // cabeça baixa, "respirando"
-    tgt = {64, 36, 0, -0.35f + 0.05f * sinf(t * 1.4f), 0.15f, 22};
+    slots[0].tgt = {64, 36, 0, -0.35f + 0.05f * sinf(t * 1.4f), 0.15f, 22};
   }
 }
 
-static void smooth(float dt) {
+static void smooth(Slot& s, float dt) {
   float k = 1.0f - expf(-dt * (st == St::DORMINDO ? 2.5f : 12.0f));
-  cur.x     += (tgt.x - cur.x) * k;
-  cur.y     += (tgt.y - cur.y) * k;
-  cur.yaw   += (tgt.yaw - cur.yaw) * k;
-  cur.pitch += (tgt.pitch - cur.pitch) * k;
-  cur.roll  += (tgt.roll - cur.roll) * k;
-  cur.r     += (tgt.r - cur.r) * k;
+  s.cur.x     += (s.tgt.x - s.cur.x) * k;
+  s.cur.y     += (s.tgt.y - s.cur.y) * k;
+  s.cur.yaw   += (s.tgt.yaw - s.cur.yaw) * k;
+  s.cur.pitch += (s.tgt.pitch - s.cur.pitch) * k;
+  s.cur.roll  += (s.tgt.roll - s.cur.roll) * k;
+  s.cur.r     += (s.tgt.r - s.cur.r) * k;
 }
 
-// Amarelo (G5) = tem alguém na câmera, verde (G4) = pessoa cadastrada,
-// vermelho (G15) = pessoa não reconhecida
+// Amarelo (G5) = tem alguém na câmera, verde (G4) = alguma pessoa cadastrada,
+// vermelho (G15) = alguma pessoa não reconhecida
 static void updateLeds() {
-  bool seen = st == St::SEGUINDO;
-  int mask = (seen ? 1 : 0) | (seen && name[0] ? 2 : 0) | (seen && !name[0] ? 4 : 0);
+  bool seen = st == St::SEGUINDO, known = false, unknown = false;
+  for (uint8_t i = 0; seen && i < count; i++) {
+    if (slots[i].known) known = true;
+    else                unknown = true;
+  }
+  int mask = (seen ? 1 : 0) | (known ? 2 : 0) | (unknown ? 4 : 0);
   if (mask == ledMask) return;
   for (uint8_t i = 0; i < LED_COUNT; i++) {
     if (ledMask < 0 || ((mask ^ ledMask) & (1 << i))) ledSet(i, mask & (1 << i));
@@ -251,35 +320,42 @@ static void updateLeds() {
   ledMask = mask;
 }
 
-static void draw(uint32_t now) {
-  Adafruit_SSD1306& o = displayOled();
-  g = &o;
-  o.clearDisplay();
-
-  pcx = cur.x;
-  pcy = cur.y;
-  pr  = cur.r;
-  cY = cosf(cur.yaw);   sY = sinf(cur.yaw);
-  cP = cosf(cur.pitch); sP = sinf(cur.pitch);
-  cR = cosf(cur.roll);  sR = sinf(cur.roll);
+static void drawHead(Slot& s, uint32_t now) {
+  pcx = s.cur.x;
+  pcy = s.cur.y;
+  pr  = s.cur.r;
+  cY = cosf(s.cur.yaw);   sY = sinf(s.cur.yaw);
+  cP = cosf(s.cur.pitch); sP = sinf(s.cur.pitch);
+  cR = cosf(s.cur.roll);  sR = sinf(s.cur.roll);
 
   // Contorno da cabeça (anel de 2 pixels)
-  int16_t cx = lroundf(cur.x), cy = lroundf(cur.y), r = lroundf(cur.r);
-  o.fillCircle(cx, cy, r, SSD1306_WHITE);
-  o.fillCircle(cx, cy, r - 2, SSD1306_BLACK);
+  int16_t cx = lroundf(s.cur.x), cy = lroundf(s.cur.y), r = lroundf(s.cur.r);
+  if (r < 3) return;   // ainda "nascendo"
+  g->fillCircle(cx, cy, r, SSD1306_WHITE);
+  g->fillCircle(cx, cy, r - 2, SSD1306_BLACK);
 
-  uint8_t em   = effectiveMood();
-  float   open = eyeOpen(now);
+  uint8_t em   = effectiveMood(s);
+  float   open = eyeOpen(s, now);
   drawBrows(em);
   drawEye(-EYE_AZ, open, em);
   drawEye(EYE_AZ, open, em);
   drawMouth(em);
+}
 
+static void draw(uint32_t now) {
+  Adafruit_SSD1306& o = displayOled();
+  g = &o;
+  o.clearDisplay();
   o.setTextColor(SSD1306_WHITE);
+  o.setTextSize(1);
+
+  for (uint8_t i = 0; i < count; i++) drawHead(slots[i], now);
+
+  const Pose& c0 = slots[0].cur;
+  int16_t cx = lroundf(c0.x), cy = lroundf(c0.y), r = lroundf(c0.r);
   if (st == St::DORMINDO) {          // "z Z" subindo
     float p1 = (now % 2400) / 2400.0f;
     float p2 = fmodf(p1 + 0.5f, 1.0f);
-    o.setTextSize(1);
     o.setCursor(cx + r * 0.7f + p1 * 6, cy - r * 0.6f - p1 * 10);
     o.print('z');
     o.setTextSize(2);
@@ -289,14 +365,26 @@ static void draw(uint32_t now) {
     o.setTextSize(2);
     o.setCursor(cx + r + 4, cy - r);
     o.print('?');
-  } else if (st == St::SEGUINDO && name[0]) {
-    // Nome no canto de baixo, do lado oposto ao da cabeça
-    int16_t w = strlen(name) * 6 - 1;
+  } else if (st == St::SEGUINDO && count == 1 && names[0][0]) {
+    // Sozinho: nome no canto de baixo, do lado oposto ao da cabeça
+    int16_t w = strlen(names[0]) * 6 - 1;
     int16_t x = cx >= SCREEN_W / 2 ? 1 : SCREEN_W - 1 - w;
     o.fillRect(x - 1, SCREEN_H - 9, w + 2, 9, SSD1306_BLACK);
-    o.setTextSize(1);
     o.setCursor(x, SCREEN_H - 8);
-    o.print(name);
+    o.print(names[0]);
+  } else if (st == St::SEGUINDO && count > 1) {
+    // Uma fila: nome (cortado se precisar) embaixo de cada cabeça
+    for (uint8_t i = 0; i < count; i++) {
+      Cell c = cellFor(count, i);
+      if (!c.label || !names[i][0]) continue;
+      size_t maxCh = (size_t)((c.w - 2) / 6);
+      size_t len   = min(strlen(names[i]), maxCh);
+      int16_t w = len * 6 - 1;
+      int16_t x = lroundf(c.cx - w / 2.0f);
+      o.fillRect(x - 1, SCREEN_H - 9, w + 2, 9, SSD1306_BLACK);
+      o.setCursor(x, SCREEN_H - 8);
+      o.write((const uint8_t*)names[i], len);
+    }
   }
   o.display();
 }
@@ -307,25 +395,40 @@ static void draw(uint32_t now) {
 void faceBegin() {
   randomSeed(esp_random());
   lastFrame = millis();
+  for (uint8_t i = 0; i < FACE_MAX; i++) {
+    slots[i].cur = slots[i].tgt = {64, 36, 0, -0.35f, 0.15f, 22};
+    slots[i].mood = MOOD_NEUTRO;
+    slots[i].known = false;
+    slots[i].nextBlink = 3000 + i * 700;   // cada um pisca numa hora
+    names[i][0] = 0;
+  }
   updateLeds();
   if (displayIsOk()) draw(lastFrame);
 }
 
-void faceLook(int x, int y, int yaw, int pitch, int roll, int size, uint8_t m) {
-  x     = constrain(x, -100, 100);
-  y     = constrain(y, -100, 100);
-  yaw   = constrain(yaw, -60, 60);
-  pitch = constrain(pitch, -45, 45);
-  roll  = constrain(roll, -45, 45);
-  size  = constrain(size, 0, 100);
+void faceLookMany(uint8_t n, const FaceIn* faces) {
+  if (n == 0) { faceIdle(); return; }
+  if (n > FACE_MAX) n = FACE_MAX;
+  for (uint8_t i = 0; i < n; i++) {
+    FaceIn f = faces[i];
+    f.x     = constrain(f.x, -100, 100);
+    f.y     = constrain(f.y, -100, 100);
+    f.yaw   = constrain(f.yaw, -60, 60);
+    f.pitch = constrain(f.pitch, -45, 45);
+    f.roll  = constrain(f.roll, -45, 45);
+    f.size  = constrain(f.size, 0, 100);
 
-  tgt.r     = 18 + size * 0.10f;                        // raio de 18 a 28 pixels
-  tgt.x     = SCREEN_W / 2 + x / 100.0f * (SCREEN_W / 2 - tgt.r - 2);
-  tgt.y     = SCREEN_H / 2 + y / 100.0f * 8;
-  tgt.yaw   = yaw * DEG;
-  tgt.pitch = pitch * DEG;
-  tgt.roll  = roll * DEG;
-  mood      = m < MOOD_COUNT ? m : MOOD_NEUTRO;
+    Slot& s = slots[i];
+    s.tgt   = targetFor(f, n, i);
+    s.mood  = f.mood < MOOD_COUNT ? f.mood : MOOD_NEUTRO;
+    s.known = f.known;
+    if (i >= count) {        // emoji novo: nasce pequeno no lugar dele e cresce
+      s.cur   = s.tgt;
+      s.cur.r = 0;
+    }
+  }
+  if (n != count) Serial.printf("[ROSTO] %u emoji(s) na tela\n", n);
+  count = n;
 
   lastLook = millis();
   if (st != St::SEGUINDO) {
@@ -335,17 +438,32 @@ void faceLook(int x, int y, int yaw, int pitch, int roll, int size, uint8_t m) {
   }
 }
 
+void faceLook(int x, int y, int yaw, int pitch, int roll, int size, uint8_t m) {
+  FaceIn f = {x, y, yaw, pitch, roll, size, m, names[0][0] != 0};
+  faceLookMany(1, &f);
+}
+
 void faceIdle() {
-  if (st == St::SEGUINDO) {
-    st = St::PROCURANDO;
-    stSince = millis();
-    Serial.println("[ROSTO] Pessoa sumiu: procurando...");
+  if (st == St::SEGUINDO) lose(millis());
+}
+
+void faceSetNames(const char* list) {
+  const char* p = list;
+  for (uint8_t i = 0; i < FACE_MAX; i++) {
+    size_t n = 0;
+    while (*p && *p != '|') {
+      if (n < FACE_NAME_MAX) names[i][n++] = *p;
+      p++;
+    }
+    names[i][n] = 0;
+    if (*p == '|') p++;
   }
 }
 
 void faceSetName(const char* n) {
-  strncpy(name, n, FACE_NAME_MAX);
-  name[FACE_NAME_MAX] = 0;
+  for (uint8_t i = 1; i < FACE_MAX; i++) names[i][0] = 0;
+  strncpy(names[0], n, FACE_NAME_MAX);
+  names[0][FACE_NAME_MAX] = 0;
 }
 
 void faceLoop() {
@@ -356,7 +474,7 @@ void faceLoop() {
   lastFrame = now;
 
   updateTargets(now);
-  smooth(dt);
+  for (uint8_t i = 0; i < count; i++) smooth(slots[i], dt);
   updateLeds();
 
   frames++;
@@ -376,12 +494,16 @@ const char* faceState() {
   }
 }
 
-uint8_t faceMood() {
-  return mood;
+uint8_t faceCount() {
+  return count;
 }
 
-const char* faceName() {
-  return name;
+uint8_t faceMood() {
+  return slots[0].mood;
+}
+
+const char* faceName(uint8_t i) {
+  return i < FACE_MAX ? names[i] : "";
 }
 
 uint8_t faceFps() {

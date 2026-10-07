@@ -38,10 +38,23 @@ Webcam ─► pc/reconhecimento.py ──USB serial 115200──► ESP32 ──
 
 ## Protocolo serial (PC → ESP32, uma linha por comando)
 
-`STATUS` · `L x y yaw pitch roll size mood` (sem resposta) · `IDLE` (sem resposta) ·
-`NAME <texto cp437>`. Respostas: `@` + JSON (`{"fw":"rosto-esp32","ver":1,...}` ou
-`{"error":"..."}`); linhas sem `@` são log. Faixas: x,y −100..100; yaw −60..60; pitch, roll
-−45..45; size 0..100; mood 0..5.
+`STATUS` · `M n` + n × `x y yaw pitch roll size mood known` (sem resposta; o PC usa este) ·
+`L x y yaw pitch roll size mood` (atalho p/ 1 pessoa) · `IDLE` (sem resposta) ·
+`NAMES a|b|c` (nomes cp437 na ordem do M) · `NAME <texto>` (só a 1ª). Respostas: `@` + JSON
+(`{"fw":"rosto-esp32","ver":2,"count":n,"names":[8 nomes],...}` ou `{"error":"..."}`); linhas
+sem `@` são log. Faixas: x,y −100..100; yaw −60..60; pitch, roll −45..45; size 0..100; mood 0..5.
+
+## Vários emojis (um por pessoa)
+
+- `FACE_MAX` = 8 em `src/face.h`, `reconhecimento.py` e `painel.html` (prévia). O painel escolhe
+  o limite (`/api/emojis?n=`, `Vision.max_faces`); o PC manda as `n` pessoas mais perto,
+  ordenadas da esquerda para a direita.
+- Layout em `cellFor()` (face.cpp e cópia JS): 1 = tela inteira; 2–4 = uma fila com nomes
+  embaixo; 5–8 = duas filas sem nomes. Cada slot tem suavização e piscada próprias.
+- Linha `M 8` tem ~200 letras: `MAX_LINE` = 400 e `Serial.setRxBufferSize(2048)` no `main.cpp`
+  (o buffer padrão de 256 transborda enquanto o OLED é desenhado).
+- No PC, cada track tem a sua pose suavizada (`tr["pose"]`) e a sua surpresa (`tr["surprise"]`);
+  o reconhecimento faz no máx. `MAX_RECOG` por quadro, os que esperam há mais tempo primeiro.
 
 ## Regras que precisam ficar sincronizadas
 
@@ -49,8 +62,10 @@ Webcam ─► pc/reconhecimento.py ──USB serial 115200──► ESP32 ──
   mesma em `src/face.h`, `MOODS` em `reconhecimento.py` e `MOODS` em `painel.html`.
 - Mudou desenho/animação em `src/face.cpp`? Replique na prévia JS de `painel.html`.
 - Mudou comando serial? Atualize `pc_link.cpp`, `Board`/`sender` no Python e o README.
-- **LEDs**: amarelo G5 = alguém na câmera; verde G4 = pessoa cadastrada; vermelho G15 = não
-  reconhecida (lógica em `updateLeds()` de `face.cpp`; nomes/cores em `LEDS` do painel).
+- **LEDs**: amarelo G5 = alguém na câmera; verde G4 = alguém cadastrado; vermelho G15 = alguém
+  não reconhecido — verde e vermelho podem acender juntos (lógica em `updateLeds()` de
+  `face.cpp`, pelo campo `known` de cada pessoa; nomes/cores em `LEDS` do painel, que fica
+  embaixo da câmera).
 - `NAME_MAX`/`FACE_NAME_MAX` = 20 (cabe numa linha do OLED). Acentos sem glifo CP437 (ã, õ...)
   são removidos por `to_oled_text()`.
 

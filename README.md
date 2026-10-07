@@ -39,9 +39,9 @@ pessoa na câmera. Rosto e foto desfocados no print por privacidade.</sub>
 |---|---|
 | 🎥 **Detecta e reconhece rostos** | OpenCV com YuNet (encontra rostos + 5 pontos) e SFace (diz quem é) |
 | 🧭 **Calcula a pose da cabeça** | virar (yaw), olhar para cima/baixo (pitch) e inclinar (roll) |
-| 🙂 **Emoji 3D no OLED** | a cabeça anda pela tela, gira, cresce quando a pessoa chega perto e pisca sozinha (~31 qps) |
+| 🙂 **Um emoji 3D por pessoa** | até 8 no OLED: cada cabeça gira junto com a sua pessoa, cresce quando ela chega perto e pisca sozinha (~31 qps) |
 | 😄 **Expressões automáticas** | surpreso quando alguém aparece, feliz para conhecidos, curioso para desconhecidos, dorme sozinho |
-| 💡 **3 LEDs indicadores** | 🟡 alguém na câmera · 🟢 pessoa cadastrada · 🔴 pessoa não reconhecida |
+| 💡 **3 LEDs indicadores** | 🟡 alguém na câmera · 🟢 alguém cadastrado · 🔴 alguém não reconhecido (podem acender juntos) |
 | 🖥️ **Painel web** | câmera ao vivo, prévia do emoji, cadastro de pessoas, busca de câmeras, estado da placa |
 | 🔒 **Privado** | sem Wi-Fi e sem nuvem: os rostos ficam só no PC (`pc/rostos/`, fora do git) |
 
@@ -57,7 +57,7 @@ flowchart LR
         POSE --> SEND
         WEB["🌐 Painel<br/>localhost:8000"]
     end
-    SEND -- "USB serial 115200<br/>L x y yaw pitch roll size mood" --> ESP
+    SEND -- "USB serial 115200<br/>M n + pose de cada pessoa" --> ESP
     subgraph PLACA["🔌 ESP32"]
         ESP["pc_link.cpp"] --> FACE["face.cpp<br/>suaviza · pisca · desenha 3D"]
         FACE --> LED["💡 LEDs"]
@@ -72,6 +72,7 @@ stateDiagram-v2
     [*] --> Dormindo
     Dormindo --> Seguindo: alguém aparece (😮 surpreso por 1,2 s)
     Seguindo --> Procurando: ninguém por 1,5 s
+    Seguindo --> Seguindo: entra/sai gente (1 a 8 emojis)
     Procurando --> Seguindo: alguém aparece
     Procurando --> Dormindo: ninguém por 8 s
     state Seguindo {
@@ -103,8 +104,8 @@ poucas poses.
 Cada rosto vira um vetor de 128 números (SFace). A pessoa é reconhecida se a semelhança
 (cosseno) com alguma amostra cadastrada passar de **40%** (`MATCH_THRESHOLD` em
 `pc/reconhecimento.py`). O nome mostrado é o que mais apareceu nos últimos 5 reconhecimentos
-daquele rosto, para não ficar piscando. Com várias pessoas, o emoji segue **a maior (a mais
-perto da câmera)**.
+daquele rosto, para não ficar piscando. Com mais pessoas do que o limite escolhido no painel,
+viram emoji **as mais perto da câmera**, mostradas da esquerda para a direita.
 
 </details>
 
@@ -172,21 +173,22 @@ painel em **http://localhost:8000**.
 
 | Seção | O que tem |
 |---|---|
-| **📷 Câmera e emoji** | vídeo ao vivo com os rostos marcados (verde = conhecido, laranja = desconhecido), **prévia do OLED** e barras com a pose |
+| **📷 Câmera e emoji** | vídeo ao vivo com os rostos marcados (verde = conhecido, laranja = desconhecido; borda grossa = virou emoji), **prévia do OLED** e barras com a pose da pessoa mais perto |
+| **🙂 Emojis no visor** | de **1** (só a pessoa mais perto) até **8** (todos que cabem): um emoji para cada pessoa na câmera |
 | **🎯 Calibrar / 🪞 Espelhar** | define a "cabeça reta" / imagem espelhada (o emoji imita como espelho) |
 | **🔍 Buscar câmeras** | procura as câmeras ligadas ao PC, com o nome do Windows; avisa se uma está **ocupada** ou com **imagem preta** |
 | **➕ Cadastrar pessoa** | 15 fotos em ~3 s; cadastrar o mesmo nome de novo **junta** amostras (óculos, outra luz...) |
 | **👥 Pessoas cadastradas** | foto, nº de amostras e **Remover** (pede confirmação) |
 | **🎭 Expressão** | **Automático** ou uma expressão fixa (Neutro, Feliz, Curioso, Surpreso, Bravo, Triste) |
-| **💡 LEDs** | mostra os 3 LEDs da placa acesos em tempo real |
+| **💡 LEDs** | embaixo da câmera: os 3 LEDs da placa, acesos em tempo real |
 | **Placa · Câmera · Portas · Log** | estado da conexão, quadros por segundo, portas seriais e mensagens da placa |
 
 ### O que o emoji faz sozinho
 
 | Situação | Emoji | LEDs |
 |---|---|---|
-| Alguém aparece (depois de 3 s sem ninguém) | 😮 Surpreso por 1,2 s | 🟡 |
-| Pessoa cadastrada | 😄 Feliz + **nome** no canto do visor | 🟡 🟢 |
+| Alguém aparece (depois de 3 s sem ninguém, ou chega gente nova) | 😮 Surpreso por 1,2 s | 🟡 |
+| Pessoa cadastrada | 😄 Feliz + **nome** (no canto, ou embaixo de cada emoji) | 🟡 🟢 |
 | Pessoa desconhecida | 🤨 Curioso | 🟡 🔴 |
 | Ninguém na câmera | 🔎 procura (olha para os lados, com "?") | — |
 | Ninguém por 8 s | 😴 dorme (cabeça baixa, "z Z") | — |
@@ -203,19 +205,22 @@ sem `@` são log.
 | Comando | Efeito |
 |---|---|
 | `STATUS` | devolve o estado |
-| `L x y yaw pitch roll size mood` | tem alguém na câmera (até ~20x/s, **sem resposta**). x, y: −100..100 · yaw: −60..60° · pitch, roll: −45..45° · size: 0..100 · mood: 0..5 |
+| `M n` + n × `x y yaw pitch roll size mood known` | n pessoas na câmera (1..8, da esquerda para a direita; até ~20x/s, **sem resposta**). x, y: −100..100 · yaw: −60..60° · pitch, roll: −45..45° · size: 0..100 · mood: 0..5 · known: 1 = cadastrada |
+| `L x y yaw pitch roll size mood` | atalho para uma pessoa só (sem resposta) |
 | `IDLE` | ninguém na câmera (sem resposta) |
-| `NAME <texto>` | nome no visor (CP437, até 20; `NAME` sozinho apaga) |
+| `NAMES <nome1>\|<nome2>\|...` | nomes na ordem do `M` (CP437, até 20 cada; vazio = desconhecida) |
+| `NAME <texto>` | nome só da 1ª pessoa (`NAME` sozinho apaga) |
 
 <details>
 <summary><b>Exemplo de respostas e teste pelo Monitor Serial</b></summary>
 
 ```
-@{"fw":"rosto-esp32","ver":1,"uptime":97,"oled":true,"state":"seguindo","mood":1,"name":"Ana","fps":30,"looks":590,"leds":[1,1,0]}
+@{"fw":"rosto-esp32","ver":2,"uptime":97,"oled":true,"state":"seguindo","count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","","","","","","",""],"fps":30,"looks":590,"leds":[1,1,1]}
 @{"error":"comando desconhecido"}
 ```
 
-Digite `L -50 0 30 10 15 60 1` no Monitor Serial: o emoji vira a cabeça e sorri. Sem `L` por
+Digite `L -50 0 30 10 15 60 1` no Monitor Serial: o emoji vira a cabeça e sorri. Para três
+emojis: `M 3 0 0 30 0 0 50 1 1 0 0 0 0 0 50 2 0 0 0 -30 0 0 50 3 0`. Sem `L`/`M` por
 1,5 s ele começa a procurar.
 
 Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Triste.
@@ -239,6 +244,7 @@ Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Trist
 | POST | `/api/calibrar` | posição atual = cabeça reta |
 | POST | `/api/espelhar?on=0\|1` · `/api/camera?index=0..9` | câmera |
 | POST | `/api/cameras/buscar` | procura de novo as câmeras (resultado em `vision.cams` do status) |
+| POST | `/api/emojis?n=1..8` | quantos emojis no visor (um por pessoa, até n) |
 | POST | `/api/port?name=COM12\|auto` · `/api/release` · `/api/resume` | porta serial |
 
 </details>
