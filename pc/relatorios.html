@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relatórios · Programa de Monitoramento Interativo</title>
+<!--
+  Relatórios das aparições gravadas em pc/dados/monitoramento.db.
+  Servido por pc/reconhecimento.py em /relatorios. Consulta:
+    GET /api/relatorio?de=AAAA-MM-DD&ate=AAAA-MM-DD&pessoa=...&pagina=N
+    GET /api/relatorio.csv?...   (download para o Excel)
+-->
+<style>
+  :root{
+    --bg:#0f1115; --card:#181b22; --line:#262a33; --txt:#e7e9ee; --muted:#8b92a1;
+    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --accent:#3b82f6; --unk:#fdba74;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{padding:18px 16px 4px;max-width:1180px;margin:auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{margin:0;font-size:22px}
+  header p{margin:2px 0 0;color:var(--muted);font-size:13px}
+  header .back{margin-left:auto}
+  :root{color-scheme:dark}
+  main{max-width:1180px;margin:auto;padding:12px 16px 32px;display:grid;gap:14px;
+    grid-template-columns:repeat(2,minmax(0,1fr))}
+  @media (max-width:820px){ main{grid-template-columns:minmax(0,1fr)} }
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;min-width:0}
+  .card h2{margin:0 0 12px;font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .card h2 small{margin-left:auto;color:var(--muted);font-weight:500;font-size:12px}
+  .wide{grid-column:1/-1}
+
+  .filters{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  .filters label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);min-width:0}
+  select,input[type=date],.btn{font:inherit;color:var(--txt);background:#11141a;border:1px solid var(--line);
+    border-radius:10px;padding:8px 12px;color-scheme:dark}
+  .btn{cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .btn:hover{border-color:#3a404c}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+
+  .kpis{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .kpi{background:#11141a;border:1px solid var(--line);border-radius:12px;padding:12px}
+  .kpi small{color:var(--muted);font-size:12px;display:block}
+  .kpi b{font-size:22px;font-variant-numeric:tabular-nums}
+
+  .tbl{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+  th{color:var(--muted);font-weight:500;white-space:nowrap}
+  td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  th.n{text-align:right}
+  .unk{color:var(--unk)}
+  .bar{height:8px;border-radius:99px;background:#11141a;border:1px solid var(--line);overflow:hidden;min-width:80px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  td img{width:32px;height:32px;border-radius:7px;object-fit:cover;display:block;background:#0b0d11}
+  .agora{color:var(--ok);font-weight:600}
+  .empty{color:var(--muted);font-size:13px}
+
+  .hours{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;align-items:end;height:120px;margin-top:6px}
+  .hours div{background:var(--accent);border-radius:4px 4px 0 0;min-height:2px;position:relative}
+  .hours div[data-n="0"]{background:#262a33}
+  .hlabels{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;font-size:10px;color:var(--muted);text-align:center;margin-top:4px}
+
+  .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:13px;color:var(--muted)}
+  .meta{color:var(--muted);font-size:12px;margin:0}
+  #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--bad);
+    color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;display:none;max-width:90vw}
+
+  /* Impressão / PDF: fundo branco, sem botões, sem fotos */
+  @media print{
+    :root{--bg:#fff;--card:#fff;--line:#ccc;--txt:#000;--muted:#555;--unk:#b45309;color-scheme:light}
+    .no-print{display:none !important}
+    .card{break-inside:avoid;border-color:#ccc}
+    main{display:block} .card{margin-bottom:12px}
+    .kpi,.bar{background:#f4f4f4}
+    td img{display:none}
+    body{font-size:12px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Programa de Monitoramento Interativo</h1>
+    <p>📊 Relatório de aparições na câmera — <span id="periodo">—</span></p>
+  </div>
+  <a class="btn back no-print" href="/">← Voltar ao painel</a>
+</header>
+
+<main>
+  <!-- Filtros -->
+  <section class="card wide no-print">
+    <div class="filters">
+      <label>Período
+        <select id="per">
+          <option value="hoje">Hoje</option>
+          <option value="ontem">Ontem</option>
+          <option value="7" selected>Últimos 7 dias</option>
+          <option value="30">Últimos 30 dias</option>
+          <option value="mes">Este mês</option>
+          <option value="tudo">Tudo</option>
+          <option value="custom">Escolher datas…</option>
+        </select>
+      </label>
+      <label>De <input type="date" id="de"></label>
+      <label>Até <input type="date" id="ate"></label>
+      <label>Pessoa
+        <select id="pessoa">
+          <option value="">Todas</option>
+          <option value="__conhecidos">Só cadastradas</option>
+          <option value="__desconhecidos">Só desconhecidas</option>
+        </select>
+      </label>
+      <div class="actions">
+        <button class="btn primary" id="gerar">🔄 Gerar relatório</button>
+        <a class="btn" id="csv" href="#">⬇️ Exportar para Excel (CSV)</a>
+        <button class="btn" id="imprimir">🖨️ Imprimir / PDF</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Resumo -->
+  <section class="card wide">
+    <h2>📌 Resumo <small id="gerado">—</small></h2>
+    <div class="kpis" id="kpis"></div>
+  </section>
+
+  <!-- Por pessoa -->
+  <section class="card wide">
+    <h2>👥 Por pessoa</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Pessoa</th><th class="n">Aparições</th><th class="n">Tempo total</th><th style="width:22%"></th>
+        <th class="n">Média</th><th class="n">Maior</th><th>Primeira vez</th><th>Última vez</th></tr></thead>
+      <tbody id="pessoas"></tbody>
+    </table></div>
+  </section>
+
+  <!-- Por dia -->
+  <section class="card">
+    <h2>📅 Por dia</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Dia</th><th class="n">Aparições</th><th style="width:30%"></th><th class="n">Cadastradas</th>
+        <th class="n">Desconh.</th><th class="n">Tempo</th></tr></thead>
+      <tbody id="dias"></tbody>
+    </table></div>
+  </section>
+
+  <!-- Por hora -->
+  <section class="card">
+    <h2>⏰ Horários de mais movimento</h2>
+    <div class="hours" id="horas"></div>
+    <div class="hlabels" id="hlabels"></div>
+    <p class="meta" style="margin-top:8px">Aparições que começaram em cada hora do dia.</p>
+  </section>
+
+  <!-- Lista completa -->
+  <section class="card wide">
+    <h2>🧾 Todas as aparições <small id="listaInfo">—</small></h2>
+    <div class="tbl"><table>
+      <thead><tr><th class="no-print"></th><th>Pessoa</th><th>Data</th><th>Entrada</th><th>Saída</th>
+        <th class="n">Duração</th><th>Câmera</th><th class="n">Semelhança</th></tr></thead>
+      <tbody id="lista"></tbody>
+    </table></div>
+    <div class="pager no-print">
+      <button class="btn" id="prev">← Anteriores</button>
+      <span id="pagInfo">—</span>
+      <button class="btn" id="next">Próximas →</button>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const brDate = s => s ? s.split("-").reverse().join("/") : "";
+const fmtTempo = s => {
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  return h ? `${h}h ${String(m).padStart(2,"0")}m` : m ? `${m}m ${String(x).padStart(2,"0")}s` : `${x}s`;
+};
+const dt = t => new Date(t*1000);
+const fmtDH = t => dt(t).toLocaleString("pt-BR", {day:"2-digit", month:"2-digit", year:"2-digit", hour:"2-digit", minute:"2-digit"});
+const nome = p => p ? `<b>${esc(p)}</b>` : `<b class="unk">Desconhecido</b>`;
+function toast(msg){ const t = $("toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = "none", 3000); }
+
+// --- Período -> datas ---
+function aplicarPeriodo(){
+  const v = $("per").value, hoje = new Date(); let de = "", ate = iso(hoje);
+  if (v === "hoje") de = ate;
+  else if (v === "ontem") { const o = new Date(hoje); o.setDate(o.getDate() - 1); de = ate = iso(o); }
+  else if (v === "7" || v === "30") { const o = new Date(hoje); o.setDate(o.getDate() - (+v - 1)); de = iso(o); }
+  else if (v === "mes") de = iso(new Date(hoje.getFullYear(), hoje.getMonth(), 1));
+  else if (v === "tudo") { de = ""; ate = ""; }
+  else return;   // custom: o usuário escolhe
+  $("de").value = de; $("ate").value = ate;
+}
+$("per").onchange = () => { aplicarPeriodo(); gerar(1); };
+["de", "ate"].forEach(id => $(id).onchange = () => { $("per").value = "custom"; gerar(1); });
+$("pessoa").onchange = () => gerar(1);
+
+function query(pagina){
+  const p = new URLSearchParams();
+  if ($("de").value) p.set("de", $("de").value);
+  if ($("ate").value) p.set("ate", $("ate").value);
+  if ($("pessoa").value) p.set("pessoa", $("pessoa").value);
+  if (pagina) p.set("pagina", pagina);
+  return p.toString();
+}
+
+let R = null;
+async function gerar(pagina){
+  try {
+    const r = await fetch("/api/relatorio?" + query(pagina || 1), {cache:"no-store"});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    R = d; render();
+  } catch(e){ toast("Falha ao gerar o relatório: " + e.message); }
+}
+
+function render(){
+  const d = R, t = d.total;
+  const de = $("de").value, ate = $("ate").value;
+  const pes = $("pessoa").selectedOptions[0].text;
+  $("periodo").textContent = (de || ate ? (de === ate ? brDate(de) : `${de ? brDate(de) : "início"} a ${ate ? brDate(ate) : "hoje"}`) : "todo o período")
+    + (pes !== "Todas" ? ` · ${pes}` : "");
+  $("gerado").textContent = "gerado em " + dt(d.geradoEm).toLocaleString("pt-BR");
+  $("csv").href = "/api/relatorio.csv?" + query();
+
+  // lista de nomes do filtro (mantém a escolha)
+  const sel = $("pessoa"), atual = sel.value;
+  const fixos = [...sel.options].slice(0, 3).map(o => o.outerHTML).join("");
+  sel.innerHTML = fixos + d.pessoas.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
+  sel.value = [...sel.options].some(o => o.value === atual) ? atual : "";
+
+  $("kpis").innerHTML = [
+    ["Aparições", t.aparicoes],
+    ["Tempo total na câmera", fmtTempo(t.tempo)],
+    ["Tempo médio", fmtTempo(t.media)],
+    ["Maior aparição", fmtTempo(t.maior)],
+    ["Pessoas cadastradas vistas", t.conhecidas],
+    ["Aparições de desconhecidos", t.desconhecidas],
+  ].map(([l, v]) => `<div class="kpi"><small>${l}</small><b>${v}</b></div>`).join("");
+
+  const maxT = Math.max(1, ...d.porPessoa.map(p => p.tempo));
+  $("pessoas").innerHTML = d.porPessoa.length ? d.porPessoa.map(p => `<tr>
+      <td>${nome(p.pessoa)}</td><td class="n">${p.aparicoes}</td><td class="n">${fmtTempo(p.tempo)}</td>
+      <td><div class="bar"><i style="width:${p.tempo/maxT*100}%"></i></div></td>
+      <td class="n">${fmtTempo(p.media)}</td><td class="n">${fmtTempo(p.maior)}</td>
+      <td>${fmtDH(p.primeira)}</td><td>${fmtDH(p.ultima)}</td></tr>`).join("")
+    : `<tr><td colspan="8" class="empty">Nenhuma aparição neste período.</td></tr>`;
+
+  const maxD = Math.max(1, ...d.porDia.map(x => x.aparicoes));
+  $("dias").innerHTML = d.porDia.length ? d.porDia.slice().reverse().map(x => `<tr>
+      <td>${brDate(x.dia)}</td><td class="n">${x.aparicoes}</td>
+      <td><div class="bar"><i style="width:${x.aparicoes/maxD*100}%"></i></div></td>
+      <td class="n">${x.conhecidas}</td><td class="n">${x.desconhecidas}</td><td class="n">${fmtTempo(x.tempo)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">—</td></tr>`;
+
+  const porH = Array(24).fill(0); d.porHora.forEach(h => porH[h.hora] = h.aparicoes);
+  const maxH = Math.max(1, ...porH);
+  $("horas").innerHTML = porH.map((n, h) => `<div data-n="${n}" style="height:${n/maxH*100}%" title="${h}h: ${n} aparição(ões)"></div>`).join("");
+  $("hlabels").innerHTML = porH.map((_, h) => `<span>${h % 3 === 0 ? h + "h" : ""}</span>`).join("");
+
+  const pags = Math.max(1, Math.ceil(t.aparicoes / d.porPagina));
+  $("listaInfo").textContent = `${t.aparicoes} no período · página ${d.pagina} de ${pags}`;
+  $("pagInfo").textContent = `Página ${d.pagina} de ${pags}`;
+  $("prev").disabled = d.pagina <= 1; $("next").disabled = d.pagina >= pags;
+  $("lista").innerHTML = d.lista.length ? d.lista.map(a => {
+      const i = dt(a.inicio), f = dt(a.fim);
+      return `<tr>
+        <td class="no-print">${a.foto ? `<img src="/api/aparicoes/foto/${a.id}" alt="" loading="lazy">` : ""}</td>
+        <td>${nome(a.pessoa)}</td><td>${i.toLocaleDateString("pt-BR")}</td><td>${i.toLocaleTimeString("pt-BR")}</td>
+        <td>${a.ativo ? `<span class="agora">na câmera agora</span>` : f.toLocaleTimeString("pt-BR")}</td>
+        <td class="n">${fmtTempo(a.duracao)}</td><td>${esc(a.camera)}</td>
+        <td class="n">${a.pessoa ? Math.round(a.confianca*100) + "%" : "—"}</td></tr>`;
+    }).join("")
+    : `<tr><td colspan="8" class="empty">Nenhuma aparição neste período.</td></tr>`;
+}
+
+$("gerar").onclick = () => gerar(R ? R.pagina : 1);
+$("prev").onclick = () => gerar(R.pagina - 1);
+$("next").onclick = () => gerar(R.pagina + 1);
+$("imprimir").onclick = () => window.print();
+
+aplicarPeriodo();
+gerar(1);
+</script>
+</body>
+</html>

@@ -33,11 +33,18 @@ Rotas da API local:
     POST /api/camera?index=0..9       troca de câmera
     POST /api/cameras/buscar          procura de novo as câmeras ligadas ao PC
     POST /api/emojis?n=1..8           quantos emojis (um por pessoa) cabem no visor
+    GET  /relatorios                  página de relatórios das aparições
+    GET  /api/aparicoes?n=5           últimas aparições (quem passou pela câmera e quanto tempo)
+    GET  /api/aparicoes/foto/<id>     foto pequena do rosto daquela aparição
+    GET  /api/relatorio?de=&ate=&pessoa=&pagina=   totais por pessoa/dia/hora + lista
+    GET  /api/relatorio.csv?de=&ate=&pessoa=       todas as aparições do filtro em CSV
+                                      (pessoa: nome, __conhecidos ou __desconhecidos)
     POST /api/port?name=COM12|auto    escolhe a porta serial
     POST /api/release | /api/resume   solta / retoma a porta COM (para gravar firmware)
 """
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -47,6 +54,7 @@ import unicodedata
 import urllib.request
 import webbrowser
 from collections import Counter, deque
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import atan, atan2, cos, degrees, hypot, sin
 from pathlib import Path
@@ -66,6 +74,8 @@ try:
 except ImportError:
     raise SystemExit("Falta o pyserial. Instale com:  pip install pyserial")
 
+from registro import Registro  # banco das aparições (pc/registro.py)
+
 try:  # opcional: nomes das câmeras no Windows ("Integrated Webcam"...)
     from pygrabber.dshow_graph import FilterGraph
 except ImportError:
@@ -76,6 +86,8 @@ HTML_FILE = ROOT / "painel.html"
 MODELS_DIR = ROOT / "modelos"
 FACES_DIR = ROOT / "rostos"
 DB_FILE = FACES_DIR / "pessoas.json"
+REG_FILE = ROOT / "dados" / "monitoramento.db"   # aparições (pc/registro.py)
+RELATORIO_FILE = ROOT / "relatorios.html"
 
 # Modelos do OpenCV Zoo (baixados sozinhos na primeira vez)
 YUNET = "face_detection_yunet_2023mar.onnx"
@@ -555,8 +567,9 @@ def head_pose(f):
 
 
 class Vision:
-    def __init__(self, cam_index, db):
+    def __init__(self, cam_index, db, reg):
         self.db = db
+        self.reg = reg               # banco das aparições
         self.det = cv2.FaceDetectorYN.create(str(MODELS_DIR / YUNET), "", (320, 320), DETECT_SCORE, 0.3, 50)
         self.rec = cv2.FaceRecognizerSF.create(str(MODELS_DIR / SFACE), "")
         self.lock = threading.Lock()
@@ -670,7 +683,14 @@ class Vision:
                 self.want_cam = ok[0]
         self.scanning = False
 
+    def camera_name(self):
+        c = next((c for c in self.cams if c["index"] == self.cam_index), None)
+        return f"{self.cam_index} · {c['name']}" if c else f"Câmera {self.cam_index}"
+
     def _set_no_face(self):
+        # Sem imagem: ninguém pode ser visto, então fecha as aparições abertas
+        self.reg.encerrar(self.tracks)
+        self.tracks = []
         with self.lock:
             self.visible = []
             self.target = None
@@ -753,6 +773,8 @@ class Vision:
                 self.next_id += 1
         # Os que sumiram há pouco continuam guardados (o detector às vezes pisca)
         self.tracks = visible + [t for t in free if now - t["last"] < TRACK_KEEP_S]
+        # Sumiu de vez: fecha a aparição no banco
+        self.reg.encerrar([t for t in free if now - t["last"] >= TRACK_KEEP_S])
         return visible
 
     def _process(self, frame):
@@ -772,6 +794,7 @@ class Vision:
             feat, _ = self._feature(frame, tr["face"])
             name, score = self.db.match(feat)
             tr["votes"].append(name)
+            self.reg.votar(tr, name, score)
             tr["score"] = score
             tr["since"] = 0
             tr["name"] = Counter(tr["votes"]).most_common(1)[0][0]
@@ -779,6 +802,7 @@ class Vision:
         target = visible[0] if visible else None  # o maior rosto = o mais perto
         if target is not None:
             self.last_seen = now
+        self.reg.atualizar(visible, self.camera_name(), frame, now)
         self._update_targets(visible, w, h, now)
         self._enroll_step(frame, visible, now)
         self._publish(frame, visible, target)
@@ -884,6 +908,8 @@ class Vision:
         if len(en["samples"]) >= ENROLL_SAMPLES:
             self.db.add(en["name"], en["samples"], en["photo"])
             visible[0]["votes"].clear()       # reconhece de novo já com o cadastro novo
+            if "sess" in visible[0]:          # e a aparição atual passa a ser dessa pessoa
+                visible[0]["sess"]["votos"].clear()
             visible[0]["since"] = RECOG_EVERY
             en.update(state="ok", msg=f"{en['name']} cadastrado(a)!")
             print(f"Pessoa cadastrada: {en['name']}")
@@ -1018,16 +1044,18 @@ def sender(board, vision):
 # ===========================================================================
 # Servidor HTTP do painel
 # ===========================================================================
-def make_handler(board, vision, db):
+def make_handler(board, vision, db, reg):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass  # silencia o log de cada requisição
 
-        def _send(self, code, body, ctype="application/json; charset=utf-8"):
+        def _send(self, code, body, ctype="application/json; charset=utf-8", download=None, cache=False):
             data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", "max-age=86400" if cache else "no-store")
+            if download:
+                self.send_header("Content-Disposition", f'attachment; filename="{download}"')
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -1055,10 +1083,43 @@ def make_handler(board, vision, db):
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
                 pass  # a página foi fechada
 
+        def _filtro(self, q):
+            """de/ate (AAAA-MM-DD) e pessoa da query string; ValueError se a data for inválida."""
+            de, ate = q.get("de") or None, q.get("ate") or None
+            for d in (de, ate):
+                if d:
+                    datetime.strptime(d, "%Y-%m-%d")
+            return de, ate, q.get("pessoa") or None
+
         def do_GET(self):
-            path = urlparse(self.path).path
+            url = urlparse(self.path)
+            path = url.path
+            q = {k: v[0] for k, v in parse_qs(url.query).items()}
             if path in ("/", "/index.html"):
                 self._send(200, HTML_FILE.read_bytes(), "text/html; charset=utf-8")
+            elif path == "/relatorios":
+                self._send(200, RELATORIO_FILE.read_bytes(), "text/html; charset=utf-8")
+            elif path == "/api/aparicoes":
+                n = q.get("n", "5")
+                self._send(200, reg.recentes(min(int(n), 50) if n.isdigit() else 5))
+            elif path.startswith("/api/aparicoes/foto/"):
+                ident = path.rsplit("/", 1)[1]
+                foto = reg.foto(int(ident)) if ident.isdigit() else None
+                if foto:
+                    self._send(200, foto, "image/jpeg", cache=True)  # a foto nunca muda
+                else:
+                    self._send(404, {"error": "foto não encontrada"})
+            elif path in ("/api/relatorio", "/api/relatorio.csv"):
+                try:
+                    de, ate, pessoa = self._filtro(q)
+                except ValueError:
+                    return self._send(400, {"error": "datas no formato AAAA-MM-DD"})
+                if path.endswith(".csv"):
+                    nome = f"aparicoes_{de or 'inicio'}_a_{ate or 'hoje'}.csv"
+                    self._send(200, reg.csv(de, ate, pessoa), "text/csv; charset=utf-8", download=nome)
+                else:
+                    pag = q.get("pagina", "1")
+                    self._send(200, reg.relatorio(de, ate, pessoa, int(pag) if pag.isdigit() else 1))
             elif path == "/video":
                 self._stream()
             elif path == "/api/status":
@@ -1149,11 +1210,14 @@ def main():
 
     ensure_models()
     db = FaceDB()
-    vision = Vision(args.camera, db)
+    reg = Registro(REG_FILE)
+    vision = Vision(args.camera, db, reg)
+    # Fechou o programa com gente na câmera: grava o fim dessas aparições
+    atexit.register(lambda: reg.encerrar(vision.tracks))
     board = Board(args.port)
     threading.Thread(target=sender, args=(board, vision), daemon=True).start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.http), make_handler(board, vision, db))
+    server = ThreadingHTTPServer(("127.0.0.1", args.http), make_handler(board, vision, db, reg))
     url = f"http://localhost:{args.http}"
     print(f"Painel rodando em {url}  (Ctrl+C para sair)")
     if not args.no_browser:

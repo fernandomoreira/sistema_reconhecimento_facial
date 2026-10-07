@@ -5,3 +5,6 @@ __pycache__/
 
 # rostos cadastrados (dados pessoais: ficam só neste PC)
 pc/rostos/
+
+# banco das aparições (fotos e horários das pessoas: fica só neste PC)
+pc/dados/

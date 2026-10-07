@@ -84,10 +84,23 @@ sem `@` são log. Faixas: x,y −100..100; yaw −60..60; pitch, roll −45..45;
   heredoc/printf no bash corrompem `\\`, `\r` e caminhos.
 - Saída do Python no console do Windows sai em cp1252 ("C�mera") — é só o terminal.
 
+## Registro de aparições e relatórios
+
+- `pc/registro.py` (`Registro`): SQLite em `pc/dados/monitoramento.db`, tabela `aparicoes`
+  (pessoa '' = desconhecido, inicio/fim em epoch, duracao, ativo, camera, confianca, foto JPEG 96px).
+- Ligado em `Vision`: `reg.votar()` a cada reconhecimento, `reg.atualizar()` a cada quadro
+  (abre após `MIN_S`, salva a cada `SALVAR_S`), `reg.encerrar()` quando o track some
+  (`TRACK_KEEP_S`), quando a câmera para (`_set_no_face`) e no `atexit`.
+- Nome da aparição = mais votado com ≥ `NOME_MIN` dos votos; cadastro feito durante a
+  aparição zera os votos dela. Cadastrado que volta em ≤ `JUNTAR_S` continua a mesma aparição.
+- Painel: quadro "Últimas aparições" (`/api/aparicoes?n=5`, a cada 2 s). Página
+  `pc/relatorios.html` em `/relatorios` (`/api/relatorio`, `/api/relatorio.csv` com `;` + BOM).
+- Título do painel: **Programa de Monitoramento Interativo**.
+
 ## Dados pessoais
 
-`pc/rostos/` (fotos e vetores dos rostos) fica **só no PC** e está no `.gitignore`. Nunca
-versionar. Os modelos `.onnx` em `pc/modelos/` são baixados sozinhos se faltarem
+`pc/rostos/` (fotos e vetores dos rostos) e `pc/dados/` (aparições) ficam **só no PC** e estão
+no `.gitignore`. Nunca versionar. Os modelos `.onnx` em `pc/modelos/` são baixados sozinhos se faltarem
 (`ensure_models()`), mas estão versionados para funcionar offline.
 
 ## Testes

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESP32 Reconhecimento Facial</title>
+<title>Programa de Monitoramento Interativo</title>
 <!--
   Painel do PC. É servido por pc/reconhecimento.py, que cuida da câmera, do
   reconhecimento e da porta serial (USB). A página consulta:
@@ -124,6 +124,17 @@
     height:220px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;color:#b8c0cc;white-space:pre-wrap}
   .log .pc{color:#93c5fd}
   .hint{color:var(--muted);font-size:12px;margin:10px 0 0}
+  .hint a{color:#93c5fd}
+  /* --- Últimas aparições --- */
+  .aps td{vertical-align:middle}
+  .aps img{width:36px;height:36px;border-radius:8px;object-fit:cover;display:block;background:#0b0d11}
+  .aps .noimg{width:36px;height:36px;border-radius:8px;background:#11141a;display:flex;align-items:center;justify-content:center}
+  .aps .agora{color:var(--ok);font-weight:600}
+  .aps .agora::before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);
+    margin-right:6px;box-shadow:0 0 8px var(--ok);animation:pulse 1.2s infinite}
+  .aps .dur{font-variant-numeric:tabular-nums;font-weight:600}
+  .aps .unk{color:#fdba74}
+  @keyframes pulse{50%{opacity:.35}}
   #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--bad);
     color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;display:none;max-width:90vw}
   #toast.ok{background:#15803d}
@@ -132,8 +143,8 @@
 <body>
 <header>
   <div>
-    <h1>ESP32 Reconhecimento Facial</h1>
-    <p>Câmera e reconhecimento no PC · emoji no OLED pelo cabo USB</p>
+    <h1>Programa de Monitoramento Interativo</h1>
+    <p>Câmera e reconhecimento no PC · emoji no OLED do ESP32 pelo cabo USB</p>
   </div>
   <div class="badges">
     <span id="camBadge" class="badge bad">Câmera</span>
@@ -173,6 +184,22 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- Últimas aparições (banco pc/dados/monitoramento.db) -->
+  <section class="card wide">
+    <h2>🕒 Últimas aparições
+      <span class="badge" id="apTotal" style="color:var(--muted);background:#11141a">—</span>
+      <a class="btn chip" href="/relatorios" target="_blank" style="margin-left:8px;text-decoration:none">📊 Relatórios</a>
+    </h2>
+    <div class="tbl">
+      <table class="aps">
+        <thead><tr><th></th><th>Pessoa</th><th>Entrou</th><th>Saiu</th><th>Tempo na câmera</th><th>Câmera</th></tr></thead>
+        <tbody id="aps"><tr><td colspan="6" class="empty">Carregando…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="hint">Todas as aparições ficam gravadas neste PC (<code>pc/dados/monitoramento.db</code>);
+      aqui aparecem as 5 mais recentes. Veja tudo e gere relatórios em <a href="/relatorios" target="_blank">Relatórios</a>.</p>
   </section>
 
   <!-- Cadastro -->
@@ -730,7 +757,7 @@ function render(s){
   $("mirBtn").classList.toggle("on", v.mirror);
   renderCams(v);
   [...$("moods").children].forEach(b => b.classList.toggle("on", +b.dataset.id === v.moodOverride));
-  document.title = (cls === "ok" && v.camOk ? "🟢 " : "🔴 ") + "ESP32 Reconhecimento Facial";
+  document.title = (cls === "ok" && v.camOk ? "🟢 " : "🔴 ") + "Monitoramento Interativo";
 
   renderPeople(s.people);
 
@@ -797,6 +824,51 @@ async function post(url, failMsg, body){
     return true;
   } catch(e){ toast(e.message || failMsg); return false; }
 }
+
+// ===========================================================================
+// Últimas aparições (a cada 2 s; o tempo de quem está na câmera conta a cada 1 s)
+// ===========================================================================
+let AP = null, apSkew = 0;   // apSkew: diferença entre o relógio do PC e o do navegador
+const fmtTempo = s => {
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  return h ? `${h}h ${String(m).padStart(2,"0")}m ${String(x).padStart(2,"0")}s` : m ? `${m}m ${String(x).padStart(2,"0")}s` : `${x}s`;
+};
+const fmtHora = t => {
+  const d = new Date(t*1000), hoje = new Date();
+  const h = d.toLocaleTimeString("pt-BR");
+  return d.toDateString() === hoje.toDateString() ? h : d.toLocaleDateString("pt-BR", {day:"2-digit", month:"2-digit"}) + " " + h;
+};
+function renderAps(){
+  if (!AP) return;
+  $("apTotal").textContent = `${AP.total} registrada${AP.total === 1 ? "" : "s"}`;
+  const agora = Date.now()/1000 + apSkew;
+  const key = JSON.stringify(AP.itens.map(a => [a.id, a.pessoa, a.ativo, a.ativo ? 0 : a.duracao, a.foto]));
+  if (key === renderAps.key) {   // nada mudou: só avança o tempo de quem está na câmera
+    document.querySelectorAll("#aps .dur[data-ini]").forEach(td => td.textContent = fmtTempo(agora - td.dataset.ini));
+    return;
+  }
+  renderAps.key = key;
+  $("aps").innerHTML = !AP.itens.length
+    ? `<tr><td colspan="6" class="empty">Nenhuma aparição registrada ainda. Fique na frente da câmera por mais de 1 segundo.</td></tr>`
+    : AP.itens.map(a => `<tr>
+        <td>${a.foto ? `<img src="/api/aparicoes/foto/${a.id}" alt="" loading="lazy">` : `<span class="noimg">🙂</span>`}</td>
+        <td>${a.pessoa ? `<b>${esc(a.pessoa)}</b>` : `<b class="unk">Desconhecido</b>`}</td>
+        <td>${fmtHora(a.inicio)}</td>
+        <td>${a.ativo ? `<span class="agora">na câmera agora</span>` : fmtHora(a.fim)}</td>
+        <td class="dur"${a.ativo ? ` data-ini="${a.inicio}"` : ""}>${fmtTempo(a.ativo ? agora - a.inicio : a.duracao)}</td>
+        <td style="color:var(--muted)">${esc(a.camera)}</td></tr>`).join("");
+}
+async function pollAps(){
+  try {
+    AP = await fetch("/api/aparicoes?n=5", {cache:"no-store"}).then(r => r.json());
+    apSkew = AP.agora - Date.now()/1000;
+    renderAps();
+  } catch(e){}
+}
+pollAps();
+setInterval(pollAps, 2000);
+setInterval(renderAps, 1000);
 
 pollStatus();
 setInterval(pollStatus, 1000);

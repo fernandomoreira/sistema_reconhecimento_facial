@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🙂 Sistema de Reconhecimento Facial com ESP32 + OLED
+# 🙂 Programa de Monitoramento Interativo
+
+### Reconhecimento facial com ESP32 + OLED
 
 **A webcam do PC reconhece quem está na frente dela, e um emoji no display OLED do ESP32
 imita os movimentos da cabeça da pessoa.**
@@ -43,7 +45,9 @@ pessoa na câmera. Rosto e foto desfocados no print por privacidade.</sub>
 | 😄 **Expressões automáticas** | surpreso quando alguém aparece, feliz para conhecidos, curioso para desconhecidos, dorme sozinho |
 | 💡 **3 LEDs indicadores** | 🟡 alguém na câmera · 🟢 alguém cadastrado · 🔴 alguém não reconhecido (podem acender juntos) |
 | 🖥️ **Painel web** | câmera ao vivo, prévia do emoji, cadastro de pessoas, busca de câmeras, estado da placa |
-| 🔒 **Privado** | sem Wi-Fi e sem nuvem: os rostos ficam só no PC (`pc/rostos/`, fora do git) |
+| 🕒 **Registro de aparições** | banco SQLite com toda pessoa que passou pela câmera, quando entrou, quando saiu e por quanto tempo; as 5 últimas aparecem no painel |
+| 📊 **Relatórios** | por período e por pessoa: totais, tempo por pessoa, por dia e por hora, lista completa, exportação para Excel (CSV) e impressão/PDF |
+| 🔒 **Privado** | sem Wi-Fi e sem nuvem: rostos e aparições ficam só no PC (`pc/rostos/` e `pc/dados/`, fora do git) |
 
 ## 🧠 Como funciona
 
@@ -181,6 +185,8 @@ painel em **http://localhost:8000**.
 | **👥 Pessoas cadastradas** | foto, nº de amostras e **Remover** (pede confirmação) |
 | **🎭 Expressão** | **Automático** ou uma expressão fixa (Neutro, Feliz, Curioso, Surpreso, Bravo, Triste) |
 | **💡 LEDs** | embaixo da câmera: os 3 LEDs da placa, acesos em tempo real |
+| **🕒 Últimas aparições** | as 5 aparições mais recentes: foto, pessoa, entrada, saída e tempo na câmera (conta ao vivo para quem ainda está lá) |
+| **📊 Relatórios** (`/relatorios`) | filtros por período (hoje, ontem, 7/30 dias, mês, tudo ou datas) e pessoa; resumo, tabelas por pessoa e por dia, gráfico por hora, lista completa paginada, **Exportar para Excel (CSV)** e **Imprimir / PDF** |
 | **Placa · Câmera · Portas · Log** | estado da conexão, quadros por segundo, portas seriais e mensagens da placa |
 
 ### O que o emoji faz sozinho
@@ -245,6 +251,11 @@ Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Trist
 | POST | `/api/espelhar?on=0\|1` · `/api/camera?index=0..9` | câmera |
 | POST | `/api/cameras/buscar` | procura de novo as câmeras (resultado em `vision.cams` do status) |
 | POST | `/api/emojis?n=1..8` | quantos emojis no visor (um por pessoa, até n) |
+| GET | `/relatorios` | página de relatórios |
+| GET | `/api/aparicoes?n=5` | últimas aparições |
+| GET | `/api/aparicoes/foto/<id>` | foto pequena do rosto daquela aparição |
+| GET | `/api/relatorio?de=AAAA-MM-DD&ate=AAAA-MM-DD&pessoa=&pagina=` | totais por pessoa/dia/hora + lista (pessoa: nome, `__conhecidos` ou `__desconhecidos`) |
+| GET | `/api/relatorio.csv?...` | todas as aparições do filtro em CSV (`;`, abre direto no Excel) |
 | POST | `/api/port?name=COM12\|auto` · `/api/release` · `/api/resume` | porta serial |
 
 </details>
@@ -281,9 +292,12 @@ sistema_reconhecimento_facial/
 │   └── pc_link.h/.cpp      # comandos recebidos do PC pela serial
 └── pc/                     # programa do PC
     ├── reconhecimento.py   # câmera, reconhecimento, serial e servidor do painel
+    ├── registro.py         # banco das aparições (SQLite) e relatórios
     ├── painel.html         # painel (a prévia do emoji é uma cópia em JS de face.cpp)
+    ├── relatorios.html     # página de relatórios
     ├── modelos/            # YuNet e SFace (.onnx; baixados sozinhos se faltarem)
-    └── rostos/             # pessoas cadastradas — fica só no PC (no .gitignore)
+    ├── rostos/             # pessoas cadastradas — fica só no PC (no .gitignore)
+    └── dados/              # monitoramento.db: todas as aparições — fica só no PC (no .gitignore)
 ```
 
 ## 🙏 Créditos
@@ -294,3 +308,15 @@ sistema_reconhecimento_facial/
 - [Adafruit SSD1306](https://github.com/adafruit/Adafruit_SSD1306) e
   [Adafruit GFX](https://github.com/adafruit/Adafruit-GFX-Library).
 - Projeto irmão: `Display_OLED_Faces` (mesma placa e mesmo painel).
+
+## 🕒 Registro de aparições
+
+Cada vez que um rosto fica na câmera, o programa grava uma **aparição** em
+`pc/dados/monitoramento.db` (SQLite): pessoa (ou "Desconhecido"), entrada, saída, duração,
+câmera, semelhança com o cadastro e uma foto pequena do rosto.
+
+- Aparições com menos de **1 s** não são gravadas (são piscadas do detector) — `MIN_S` em `pc/registro.py`.
+- Se uma pessoa **cadastrada** some e volta em até **5 s**, continua sendo a mesma aparição (`JUNTAR_S`).
+- Enquanto a pessoa está na câmera, a aparição é atualizada a cada 2 s; se o programa for
+  fechado de repente, ela é fechada no último horário salvo.
+- Para abrir o banco em outro programa (ex.: DB Browser for SQLite), a tabela é `aparicoes`.
