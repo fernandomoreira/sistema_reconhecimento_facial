@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 Reconhecimento Facial</title>
+<!--
+  Painel do PC. É servido por pc/reconhecimento.py, que cuida da câmera, do
+  reconhecimento e da porta serial (USB). A página consulta:
+    GET /api/status a cada 1 s   (placa, câmera, pessoas, log)
+    GET /api/alvo   a cada 0,1 s (o rosto seguido, para a prévia do emoji)
+  IMPORTANTE: a prévia do visor é uma cópia em JavaScript de src/face.cpp,
+  e a lista MOODS tem a mesma ordem de src/face.h.
+-->
+<style>
+  :root{
+    --bg:#0f1115; --card:#181b22; --line:#262a33; --txt:#e7e9ee; --muted:#8b92a1;
+    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --accent:#3b82f6; --led:#facc15;
+    --oled:#7dd3fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{padding:18px 16px 4px;max-width:1180px;margin:auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{margin:0;font-size:22px}
+  header p{margin:2px 0 0;color:var(--muted);font-size:13px}
+  main{max-width:1180px;margin:auto;padding:12px 16px 32px;display:grid;gap:14px;
+    grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;min-width:0}
+  .card h2{margin:0 0 12px;font-size:16px;display:flex;align-items:center;gap:8px}
+  .wide{grid-column:1/-1}
+  .section-title{grid-column:1/-1;margin:22px 0 -4px;padding-top:18px;border-top:1px solid var(--line);
+    font-size:13px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+  .badge{font-size:12px;font-weight:600;padding:3px 10px;border-radius:99px;
+    display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+  .card h2 .badge{margin-left:auto}
+  header .badges{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+  header .badge{font-size:14px;padding:6px 14px}
+  .badge::before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
+  .badge.ok{color:var(--ok);background:rgba(34,197,94,.12)}
+  .badge.warn{color:var(--warn);background:rgba(245,158,11,.12)}
+  .badge.bad{color:var(--bad);background:rgba(239,68,68,.12)}
+  .badge.ok::before{box-shadow:0 0 8px var(--ok)}
+
+  dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:7px 14px}
+  dt{color:var(--muted)} dd{margin:0;font-weight:600;word-break:break-word}
+  .big{font-size:20px;font-family:ui-monospace,Consolas,monospace}
+  .err{margin:12px 0 0;padding:8px 10px;border-radius:8px;background:rgba(239,68,68,.1);
+    color:#fca5a5;font-size:13px;display:none}
+
+  .row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
+  select,.btn,input[type=text]{font:inherit;color:var(--txt);background:#11141a;border:1px solid var(--line);
+    border-radius:10px;padding:8px 12px}
+  select{flex:1;min-width:0}
+  input[type=text]{flex:1;min-width:0;font-size:16px}
+  input[type=text]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.2)}
+  .btn{cursor:pointer} .btn:hover:not(:disabled){border-color:#3a404c}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;padding:9px 18px}
+  .btn.primary:hover:not(:disabled){filter:brightness(1.1)}
+  .btn.danger{color:#fca5a5}
+  .btn.danger.confirm{background:var(--bad);border-color:var(--bad);color:#fff}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.chip{padding:6px 12px;font-size:13px}
+  .btn.chip.on{border-color:var(--accent);background:rgba(59,130,246,.16);color:#bfdbfe}
+
+  /* --- Câmera + emoji --- */
+  .live{display:grid;gap:16px;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-items:start}
+  @media (max-width:820px){ .live{grid-template-columns:1fr} }
+  .cam{position:relative;background:#000;border-radius:10px;border:1px solid #2b2f38;overflow:hidden;aspect-ratio:4/3}
+  .cam img{width:100%;height:100%;object-fit:contain;display:block}
+  .cam .off{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;
+    padding:24px;color:var(--muted);font-size:14px;background:#0b0d11}
+  .cam.nocam .off{display:flex}
+  .faces{margin:8px 0 0;font-size:13px;color:var(--muted);min-height:1.4em}
+  .faces b{color:var(--txt)}
+  .oled{background:#000;border-radius:10px;padding:12px;border:1px solid #2b2f38;display:flex;justify-content:center}
+  .oled canvas{width:100%;max-width:440px;aspect-ratio:2/1;image-rendering:pixelated}
+  .oled-name{text-align:center;color:var(--muted);margin:8px 0 0;font-size:13px;min-height:1.4em}
+  .oled-name b{color:var(--txt)}
+
+  .meters{display:grid;gap:7px;margin-top:14px}
+  .meter{display:grid;grid-template-columns:118px 1fr 52px;gap:10px;align-items:center;font-size:13px}
+  .meter .lbl{color:var(--muted)}
+  .meter .val{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+  .bar{position:relative;height:8px;border-radius:99px;background:#11141a;border:1px solid var(--line);overflow:hidden}
+  .bar i{position:absolute;top:0;bottom:0;background:var(--accent);border-radius:99px;transition:left .1s,width .1s}
+  .bar.signed::after{content:"";position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:#3a404c}
+
+  /* --- Cadastro e pessoas --- */
+  .progress{height:10px;border-radius:99px;background:#11141a;border:1px solid var(--line);overflow:hidden;margin-top:12px;display:none}
+  .progress i{display:block;height:100%;width:0;background:var(--ok);transition:width .2s}
+  .msg{margin:8px 0 0;font-size:13px;color:var(--muted);min-height:1.4em}
+  .msg.ok{color:var(--ok)} .msg.bad{color:#fca5a5}
+  .people{display:grid;gap:8px}
+  .person{display:flex;align-items:center;gap:12px;padding:8px 10px;background:#11141a;border:1px solid var(--line);border-radius:12px}
+  .person img{width:44px;height:44px;border-radius:10px;object-fit:cover;background:#0b0d11;flex:none}
+  .person .info{min-width:0;flex:1}
+  .person .info b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .person .info small{color:var(--muted)}
+  .person.here{border-color:rgba(34,197,94,.55);background:rgba(34,197,94,.06)}
+  .empty{color:var(--muted);font-size:13px;margin:0}
+
+  .moods{display:flex;gap:8px;flex-wrap:wrap}
+
+  /* --- LEDs (só indicação) --- */
+  .leds{display:grid;gap:8px}
+  .led{display:flex;align-items:center;gap:12px;padding:10px 12px;background:#11141a;border:1px solid var(--line);border-radius:12px}
+  .led .dot{width:16px;height:16px;border-radius:50%;background:#2a2f39;flex:none;transition:.15s}
+  .led .name{font-weight:600}
+  .led small{color:var(--muted);margin-left:auto;font-size:12px}
+  .led.on{border-color:color-mix(in srgb,var(--led) 50%,transparent);background:color-mix(in srgb,var(--led) 6%,transparent)}
+  .led.on .dot{background:var(--led);box-shadow:0 0 12px var(--led)}
+
+  /* --- Portas e log --- */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:500}
+  tr.cur td{color:var(--ok);font-weight:600}
+  .tbl{overflow-x:auto}
+  .log{margin:0;background:#0b0d11;border:1px solid var(--line);border-radius:10px;padding:10px;
+    height:220px;overflow:auto;font:12px/1.5 ui-monospace,Consolas,monospace;color:#b8c0cc;white-space:pre-wrap}
+  .log .pc{color:#93c5fd}
+  .hint{color:var(--muted);font-size:12px;margin:10px 0 0}
+  #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--bad);
+    color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;display:none;max-width:90vw}
+  #toast.ok{background:#15803d}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ESP32 Reconhecimento Facial</h1>
+    <p>Câmera e reconhecimento no PC · emoji no OLED pelo cabo USB</p>
+  </div>
+  <div class="badges">
+    <span id="camBadge" class="badge bad">Câmera</span>
+    <span id="topBadge" class="badge bad">Desconectada</span>
+  </div>
+</header>
+
+<main>
+  <!-- ===================== Câmera + emoji ===================== -->
+  <section class="card wide">
+    <h2>📷 Câmera e emoji</h2>
+    <div class="live">
+      <div>
+        <div class="cam nocam" id="cam">
+          <img id="video" alt="Câmera ao vivo">
+          <div class="off" id="camOff">Abrindo a câmera…</div>
+        </div>
+        <p class="faces" id="faces">—</p>
+      </div>
+      <div>
+        <div class="oled"><canvas id="oled" width="128" height="64"></canvas></div>
+        <p class="oled-name" id="oledName">—</p>
+        <div class="meters" id="meters"></div>
+        <div class="row">
+          <button class="btn" id="calBtn" title="Olhe reto para a câmera e clique">🎯 Calibrar (olhe reto)</button>
+          <button class="btn chip" id="mirBtn" title="Imagem espelhada: o emoji imita você como um espelho">🪞 Espelhar</button>
+        </div>
+        <div class="row" style="flex-wrap:nowrap">
+          <select id="camSel" title="Escolha a câmera" style="flex:1 1 0;min-width:0"><option>Buscando câmeras…</option></select>
+          <button class="btn" id="scanBtn" style="flex:none;white-space:nowrap" title="Procura de novo as câmeras ligadas ao PC">🔍 Buscar câmeras</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Cadastro -->
+  <section class="card">
+    <h2>➕ Cadastrar pessoa</h2>
+    <div class="row" style="margin-top:0">
+      <input type="text" id="name" maxlength="20" placeholder="Nome (até 20 letras)">
+      <button class="btn primary" id="enrollBtn">Cadastrar</button>
+    </div>
+    <div class="progress" id="progress"><i></i></div>
+    <p class="msg" id="enrollMsg"></p>
+    <p class="hint">Fique <b>sozinho</b> na frente da câmera, com o rosto bem iluminado. São tiradas
+      15 amostras em ~3 s: mexa a cabeça devagar. Cadastrar o mesmo nome de novo junta mais
+      amostras (ajuda com óculos, outra luz etc.).</p>
+  </section>
+
+  <!-- Pessoas -->
+  <section class="card">
+    <h2>👥 Pessoas cadastradas <span class="badge ok" id="peopleCount" style="display:none"></span></h2>
+    <div class="people" id="people"></div>
+    <p class="hint">Os rostos ficam só neste PC, em <code>pc/rostos/</code>.</p>
+  </section>
+
+  <!-- Expressão -->
+  <section class="card">
+    <h2>🎭 Expressão do emoji</h2>
+    <div class="moods" id="moods"></div>
+    <p class="hint">No <b>Automático</b>: 😮 surpreso quando alguém aparece, 😄 feliz para pessoas
+      cadastradas (o nome aparece no visor) e 🤨 curioso para desconhecidos. Sem ninguém na câmera
+      ele procura (olha para os lados) e depois de 8 s dorme 😴.</p>
+  </section>
+
+  <!-- LEDs -->
+  <section class="card">
+    <h2>💡 LEDs da placa</h2>
+    <div class="leds" id="leds"></div>
+    <p class="hint">Os LEDs são automáticos (indicam o que a câmera está vendo).</p>
+  </section>
+
+  <!-- ===================== Informações técnicas ===================== -->
+  <h3 class="section-title">Informações técnicas</h3>
+
+  <section class="card">
+    <h2>🔌 Placa <span id="badge" class="badge bad">Desconectada</span></h2>
+    <dl>
+      <dt>Porta</dt><dd class="big" id="port">—</dd>
+      <dt>Dispositivo</dt><dd id="desc">—</dd>
+      <dt>Chip USB</dt><dd id="chip">—</dd>
+      <dt>Firmware</dt><dd id="fw">—</dd>
+      <dt>Placa ligada há</dt><dd id="uptime">—</dd>
+      <dt>Display OLED</dt><dd id="oledOk">—</dd>
+      <dt>Emoji na placa</dt><dd id="bState">—</dd>
+      <dt>Quadros no OLED</dt><dd id="bFps">—</dd>
+      <dt>Poses recebidas</dt><dd id="bLooks">—</dd>
+      <dt>Última resposta</dt><dd id="lastAns">—</dd>
+    </dl>
+    <p class="err" id="err"></p>
+    <div class="row">
+      <select id="portSel" title="Porta serial"></select>
+      <button class="btn" id="relBtn">Liberar porta</button>
+    </div>
+    <p class="hint">“Liberar porta” solta a COM para você gravar o firmware ou abrir o Monitor Serial.</p>
+  </section>
+
+  <section class="card">
+    <h2>🎥 Câmera e reconhecimento</h2>
+    <dl>
+      <dt>Câmera</dt><dd id="cIdx">—</dd>
+      <dt>Resolução</dt><dd id="cRes">—</dd>
+      <dt>Quadros/s</dt><dd id="cFps">—</dd>
+      <dt>Espelhada</dt><dd id="cMir">—</dd>
+      <dt>Limite p/ reconhecer</dt><dd id="cThr">—</dd>
+      <dt>Calibração</dt><dd id="cCal">—</dd>
+      <dt>Modelos</dt><dd>YuNet (detecção) + SFace (reconhecimento)</dd>
+    </dl>
+    <p class="err" id="camErr"></p>
+  </section>
+
+  <section class="card">
+    <h2>🧭 Portas seriais no PC</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Porta</th><th>Descrição</th><th>VID:PID</th></tr></thead>
+      <tbody id="ports"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card wide">
+    <h2>📜 Mensagens da placa</h2>
+    <pre class="log" id="log"></pre>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const MOODS = [["😐","Neutro"],["😄","Feliz"],["🤨","Curioso"],["😮","Surpreso"],["😠","Bravo"],["😢","Triste"]];
+const M_NEUTRO = 0, M_FELIZ = 1, M_CURIOSO = 2, M_SURPRESO = 3, M_BRAVO = 4, M_TRISTE = 5;
+const LEDS = [["Amarelo (G5)","alguém na câmera","#facc15"],["Verde (G4)","pessoa cadastrada","#22c55e"],["Vermelho (G15)","pessoa não reconhecida","#ef4444"]];
+const $ = id => document.getElementById(id);
+let S = null;         // último /api/status
+let A = null;         // último /api/alvo
+let serverOk = true;
+
+// --- Formatação ---
+function fmtDur(s){
+  s = Math.max(0, Math.floor(s));
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600),
+        m = Math.floor(s%3600/60), sec = s%60, p = n => String(n).padStart(2,"0");
+  return (d ? d + "d " : "") + p(h) + ":" + p(m) + ":" + p(sec);
+}
+function toast(msg, good){
+  const t = $("toast"); t.textContent = msg; t.className = good ? "ok" : ""; t.style.display = "block";
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = "none", 2800);
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// ===========================================================================
+// Prévia do OLED: cópia de src/face.cpp (mesma geometria, mesmos estados)
+// ===========================================================================
+const W = 128, H = 64;
+const FRAME_MS = 33, LOST_MS = 1500, SEARCH_MS = 8000;
+const EYE_AZ = 0.38, EYE_EL = -0.18, EYE_RX = 0.17, EYE_RY = 0.22, VIS = 0.08, DEG = Math.PI/180;
+const ST_DORMINDO = 0, ST_PROCURANDO = 1, ST_SEGUINDO = 2;
+const F = {
+  cur: {x:64, y:36, yaw:0, pitch:-0.35, roll:0.15, r:22},
+  tgt: {x:64, y:36, yaw:0, pitch:-0.35, roll:0.15, r:22},
+  st: ST_DORMINDO, stSince: 0, lastLook: 0, mood: M_NEUTRO, name: "",
+  lastFrame: 0, nextBlink: 3000,
+};
+const pix = new Uint8Array(W*H);
+let texts = [];   // textos do quadro (desenhados por cima com a fonte do navegador)
+let pcx, pcy, pr, cY, sY, cP, sP, cR, sR;
+
+function px(x, y, c){ x |= 0; y |= 0; if (x >= 0 && x < W && y >= 0 && y < H) pix[y*W + x] = c; }
+function hline(x, y, w, c){ for (let i = 0; i < w; i++) px(x + i, y, c); }
+function drawLine(x0, y0, x1, y1, c){        // Bresenham, como a Adafruit GFX
+  const steep = Math.abs(y1 - y0) > Math.abs(x1 - x0);
+  if (steep) [x0, y0, x1, y1] = [y0, x0, y1, x1];
+  if (x0 > x1) [x0, x1, y0, y1] = [x1, x0, y1, y0];
+  const dx = x1 - x0, dy = Math.abs(y1 - y0), ys = y0 < y1 ? 1 : -1;
+  let err = dx >> 1;
+  for (; x0 <= x1; x0++) {
+    steep ? px(y0, x0, c) : px(x0, y0, c);
+    err -= dy; if (err < 0) { y0 += ys; err += dx; }
+  }
+}
+function fillCircle(x0, y0, r, c){
+  for (let dy = -r; dy <= r; dy++) { const w = Math.floor(Math.sqrt(r*r - dy*dy) + 0.5); hline(x0 - w, y0 + dy, 2*w + 1, c); }
+}
+function fillEllipse(x0, y0, rx, ry, c){
+  rx = Math.max(rx, 0.5); ry = Math.max(ry, 0.5);
+  const h = Math.ceil(ry);
+  for (let dy = -h; dy <= h; dy++) {
+    const t = 1 - (dy*dy)/(ry*ry); if (t < 0) continue;
+    const w = Math.floor(rx*Math.sqrt(t) + 0.5);
+    hline(x0 - w, y0 + dy, 2*w + 1, c);
+  }
+}
+function fillTriangle(a, b, d, c){
+  const minX = Math.min(a.x, b.x, d.x), maxX = Math.max(a.x, b.x, d.x);
+  const minY = Math.min(a.y, b.y, d.y), maxY = Math.max(a.y, b.y, d.y);
+  const e = (p, q, x, y) => (q.x - p.x)*(y - p.y) - (q.y - p.y)*(x - p.x);
+  for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+    const w0 = e(b, d, x, y), w1 = e(d, a, x, y), w2 = e(a, b, x, y);
+    if ((w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0)) px(x, y, c);
+  }
+}
+const lround = v => Math.round(v);
+function proj(az, el){
+  const x = Math.sin(az)*Math.cos(el), y = Math.sin(el), z = Math.cos(az)*Math.cos(el);
+  const y1 = y*cP - z*sP, z1 = y*sP + z*cP;
+  const x2 = x*cY + z1*sY, z2 = -x*sY + z1*cY;
+  const x3 = x2*cR - y1*sR, y3 = x2*sR + y1*cR;
+  return {x: lround(pcx + pr*x3), y: lround(pcy + pr*y3), z: z2};
+}
+function line(a, b, thick){
+  if (a.z < VIS || b.z < VIS) return;
+  drawLine(a.x, a.y, b.x, b.y, 1);
+  if (thick) drawLine(a.x, a.y + 1, b.x, b.y + 1, 1);
+}
+function curve(az0, halfW, el0, bend, tilt, thick){
+  const N = 7; let prev = proj(az0 - halfW, el0 - tilt);
+  for (let i = 1; i < N; i++) {
+    const u = -1 + 2*i/(N - 1);
+    const p = proj(az0 + u*halfW, el0 + bend*(1 - u*u) + tilt*u);
+    line(prev, p, thick); prev = p;
+  }
+}
+const clampf = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+function drawEye(az, open, em){
+  if (F.st === ST_DORMINDO || open < 0.25) { curve(az, 0.13, EYE_EL + 0.02, 0.03, 0, true); return; }
+  if (em === M_FELIZ) { curve(az, 0.14, EYE_EL + 0.03, -0.09, 0, true); return; }
+  const c = proj(az, EYE_EL); if (c.z < VIS) return;
+  const s = em === M_SURPRESO ? 1.3 : 1.0, squash = clampf(c.z, 0.3, 1);
+  const rx = pr*EYE_RX*s*squash; let ry = pr*EYE_RY*s*open;
+  if (em === M_BRAVO) ry *= 0.75;
+  fillEllipse(c.x, c.y, rx, ry, 1);
+  if (rx >= 2.5 && ry >= 3) {
+    const bx = c.x - Math.trunc(rx*0.45), by = c.y - Math.trunc(ry*0.5);
+    px(bx, by, 0); px(bx + 1, by, 0); px(bx, by + 1, 0); px(bx + 1, by + 1, 0);
+  }
+}
+function drawBrows(em){
+  for (const side of [-1, 1]) {
+    const az = side*EYE_AZ;
+    if (em === M_BRAVO)         curve(az, 0.14, EYE_EL - 0.30, 0, -side*0.07, true);
+    else if (em === M_TRISTE)   curve(az, 0.14, EYE_EL - 0.30, 0,  side*0.07, true);
+    else if (em === M_SURPRESO) curve(az, 0.14, EYE_EL - 0.42, -0.04, 0, false);
+    else if (em === M_CURIOSO) {
+      if (side > 0) curve(az, 0.14, EYE_EL - 0.38, -0.05, 0, false);
+      else          curve(az, 0.13, EYE_EL - 0.27, 0, 0, false);
+    }
+  }
+}
+function drawRing(az, el, rx, ry){
+  const c = proj(az, el); if (c.z < VIS) return;
+  const sq = clampf(c.z, 0.3, 1);
+  fillEllipse(c.x, c.y, pr*rx*sq, pr*ry, 1);
+  fillEllipse(c.x, c.y, pr*rx*sq - 1.5, pr*ry - 1.5, 0);
+}
+function drawMouth(em){
+  if (F.st === ST_DORMINDO) { drawRing(0, 0.45, 0.07, 0.08); return; }
+  switch (em) {
+    case M_FELIZ: {
+      const N = 7, top = [], bot = [];
+      for (let i = 0; i < N; i++) {
+        const u = -1 + 2*i/(N - 1);
+        top.push(proj(u*0.32, 0.32)); bot.push(proj(u*0.32, 0.32 + 0.22*(1 - u*u)));
+      }
+      for (let i = 0; i < N - 1; i++) {
+        if (top[i].z < VIS || top[i+1].z < VIS) continue;
+        fillTriangle(top[i], top[i+1], bot[i], 1); fillTriangle(top[i+1], bot[i+1], bot[i], 1);
+      }
+      break;
+    }
+    case M_SURPRESO: drawRing(0, 0.46, 0.11, 0.14); break;
+    case M_CURIOSO:  curve(0.06, 0.15, 0.44, 0, -0.03, true); break;
+    case M_BRAVO:    curve(0, 0.22, 0.48, -0.07, 0, true); break;
+    case M_TRISTE:   curve(0, 0.24, 0.50, -0.10, 0, true); break;
+    default:         curve(0, 0.26, 0.42, 0.05, 0, true);
+  }
+}
+function eyeOpen(now){
+  if (now >= F.nextBlink) {
+    const d = now - F.nextBlink;
+    if (d < 160) return Math.abs(d - 80)/80;
+    F.nextBlink = now + 2000 + Math.random()*3500;
+  }
+  return 1;
+}
+const effMood = () => F.st === ST_SEGUINDO ? F.mood : F.st === ST_PROCURANDO ? M_CURIOSO : M_NEUTRO;
+
+function faceLook(t){
+  const r = 18 + t.size*0.10;
+  Object.assign(F.tgt, {r, x: W/2 + t.x/100*(W/2 - r - 2), y: H/2 + t.y/100*8,
+    yaw: t.yaw*DEG, pitch: t.pitch*DEG, roll: t.roll*DEG});
+  F.mood = t.mood; F.lastLook = performance.now();
+  if (F.st !== ST_SEGUINDO) { F.st = ST_SEGUINDO; F.stSince = F.lastLook; }
+}
+function faceIdle(){
+  if (F.st === ST_SEGUINDO) { F.st = ST_PROCURANDO; F.stSince = performance.now(); }
+}
+function faceUpdate(now, dt){
+  if (F.st === ST_SEGUINDO && now - F.lastLook > LOST_MS) { F.st = ST_PROCURANDO; F.stSince = now; }
+  if (F.st === ST_PROCURANDO && now - F.stSince > SEARCH_MS) { F.st = ST_DORMINDO; F.stSince = now; }
+  const t = now/1000;
+  if (F.st === ST_PROCURANDO) F.tgt = {x:64, y:32, yaw:0.75*Math.sin(t*1.6), pitch:0.12*Math.sin(t*0.9), roll:0, r:22};
+  else if (F.st === ST_DORMINDO) F.tgt = {x:64, y:36, yaw:0, pitch:-0.35 + 0.05*Math.sin(t*1.4), roll:0.15, r:22};
+  const k = 1 - Math.exp(-dt*(F.st === ST_DORMINDO ? 2.5 : 12));
+  for (const key in F.cur) F.cur[key] += (F.tgt[key] - F.cur[key])*k;
+}
+function faceDraw(now){
+  pix.fill(0); texts = [];
+  const c = F.cur;
+  pcx = c.x; pcy = c.y; pr = c.r;
+  cY = Math.cos(c.yaw); sY = Math.sin(c.yaw); cP = Math.cos(c.pitch); sP = Math.sin(c.pitch);
+  cR = Math.cos(c.roll); sR = Math.sin(c.roll);
+  const cx = lround(c.x), cy = lround(c.y), r = lround(c.r);
+  fillCircle(cx, cy, r, 1); fillCircle(cx, cy, r - 2, 0);
+  const em = effMood(), open = eyeOpen(now);
+  drawBrows(em); drawEye(-EYE_AZ, open, em); drawEye(EYE_AZ, open, em); drawMouth(em);
+  if (F.st === ST_DORMINDO) {
+    const p1 = (now % 2400)/2400, p2 = (p1 + 0.5) % 1;
+    texts.push(["z", 1, cx + r*0.7 + p1*6, cy - r*0.6 - p1*10]);
+    texts.push(["Z", 2, cx + r*0.9 + p2*6, cy - r - p2*10]);
+  } else if (F.st === ST_PROCURANDO && Math.floor(now/600) % 2 === 0) {
+    texts.push(["?", 2, cx + r + 4, cy - r]);
+  } else if (F.st === ST_SEGUINDO && F.name) {
+    const w = F.name.length*6 - 1, x = cx >= W/2 ? 1 : W - 1 - w;
+    for (let y = H - 9; y < H; y++) hline(x - 1, y, w + 2, 0);
+    texts.push([F.name, 1, x, H - 8]);
+  }
+  blit();
+}
+const ctx = $("oled").getContext("2d");
+const img = ctx.createImageData(W, H);
+function blit(){
+  const col = getComputedStyle(document.documentElement).getPropertyValue("--oled").trim() || "#7dd3fc";
+  const [R, G, B] = [1, 3, 5].map(i => parseInt(col.slice(i, i + 2), 16));
+  for (let i = 0; i < W*H; i++) {
+    const on = pix[i];
+    img.data[i*4] = on ? R : 0; img.data[i*4+1] = on ? G : 0; img.data[i*4+2] = on ? B : 0; img.data[i*4+3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.fillStyle = col; ctx.textBaseline = "top";
+  for (const [t, size, x, y] of texts) {
+    ctx.font = `bold ${8*size}px Consolas, "Courier New", monospace`;
+    [...t].forEach((ch, j) => ctx.fillText(ch, Math.round(x) + j*6*size, Math.round(y)));
+  }
+}
+function animate(now){
+  if (now - F.lastFrame >= FRAME_MS) {
+    const dt = Math.min(0.1, (now - F.lastFrame)/1000);
+    F.lastFrame = now;
+    faceUpdate(now, dt);
+    faceDraw(now);
+  }
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+// ===========================================================================
+// Câmera, pose e cadastro (alvo, ~10x por segundo)
+// ===========================================================================
+const METERS = [
+  ["yaw",   "Virar (yaw)",      -60, 60, "°"],
+  ["pitch", "Cima/baixo",       -45, 45, "°"],
+  ["roll",  "Inclinar (roll)",  -45, 45, "°"],
+  ["x",     "Posição ↔",       -100, 100, ""],
+  ["y",     "Posição ↕",       -100, 100, ""],
+  ["size",  "Distância (perto)",  0, 100, ""],
+];
+$("meters").innerHTML = METERS.map(([k, label, lo]) =>
+  `<div class="meter"><span class="lbl">${label}</span><span class="bar${lo < 0 ? " signed" : ""}" id="bar_${k}"><i></i></span>` +
+  `<span class="val" id="val_${k}">—</span></div>`).join("");
+
+function renderMeters(t){
+  for (const [k, , lo, hi, unit] of METERS) {
+    const bar = $("bar_" + k).firstChild;
+    if (!t) { bar.style.width = "0"; $("val_" + k).textContent = "—"; continue; }
+    const v = t[k], f = (v - lo)/(hi - lo);
+    if (lo < 0) { const z = 0.5; bar.style.left = Math.min(f, z)*100 + "%"; bar.style.width = Math.abs(f - z)*100 + "%"; }
+    else { bar.style.left = "0"; bar.style.width = f*100 + "%"; }
+    $("val_" + k).textContent = v + unit;
+  }
+}
+
+// Mesma conversão do PC para a fonte do OLED (sem ã, õ, À...)
+function oledName(s){
+  const cp437 = "áéíóúâêôàçüñÉÇäëïöÿåæÆÄÖÜ";
+  return [...s].map(ch => ch.charCodeAt(0) < 128 || cp437.includes(ch) ? ch
+    : ch.normalize("NFD").replace(/[̀-ͯ]/g, "") || "?").join("");
+}
+
+function renderAlvo(a){
+  A = a;
+  const t = a && a.target;
+  if (t) { faceLook(t); F.name = oledName(t.name || ""); } else { faceIdle(); }
+  renderMeters(t);
+
+  const faces = a ? a.faces : [];
+  $("faces").innerHTML = !faces.length ? "Nenhum rosto na câmera"
+    : `Rostos na câmera: <b>${faces.length}</b> — ` + faces.map((f, i) =>
+        `${i === 0 ? "🎯 " : ""}<b>${esc(f.name || "Desconhecido")}</b> (${Math.round(f.score*100)}%)`).join(", ");
+
+  const st = F.st, m = t ? MOODS[t.mood] : null;
+  $("oledName").innerHTML =
+      st === ST_SEGUINDO   ? `Seguindo ${t && t.name ? `<b>${esc(t.name)}</b>` : "<b>desconhecido</b>"} · ${m ? m[0] + " " + m[1] : ""}`
+    : st === ST_PROCURANDO ? "🔎 Procurando alguém…"
+    : "😴 Dormindo (ninguém na câmera)";
+
+  // Cadastro em andamento
+  const en = a && a.enroll;
+  const busy = en && en.state === "capturando";
+  $("progress").style.display = en && en.state !== "cancelado" ? "block" : "none";
+  if (en) $("progress").firstChild.style.width = (en.count/en.total*100) + "%";
+  $("enrollMsg").textContent = en ? (busy ? `${en.msg} (${en.count}/${en.total})` : en.msg) : "";
+  $("enrollMsg").className = "msg" + (en && en.state === "ok" ? " ok" : en && en.state === "erro" ? " bad" : "");
+  $("enrollBtn").textContent = busy ? "Cancelar" : "Cadastrar";
+  $("enrollBtn").classList.toggle("primary", !busy);
+  if (en && en.state !== renderAlvo.lastState && en.state === "ok") { toast(en.msg, true); pollStatus(); }
+  renderAlvo.lastState = en && en.state;
+}
+
+// ===========================================================================
+// Status geral (1x por segundo)
+// ===========================================================================
+function buildMoods(){
+  const all = [[-1, "🤖 Automático"]].concat(MOODS.map(([e, n], i) => [i, `${e} ${n}`]));
+  $("moods").innerHTML = all.map(([id, label]) => `<button class="btn chip" data-id="${id}">${label}</button>`).join("");
+  [...$("moods").children].forEach(b => b.onclick = () => post(`/api/humor?id=${b.dataset.id}`, "Falha ao mudar a expressão"));
+}
+buildMoods();
+$("leds").innerHTML = LEDS.map(([n, d, c]) => `<div class="led" style="--led:${c}"><span class="dot"></span><span class="name">${n}</span><small>${d}</small></div>`).join("");
+$("camSel").onchange = e => post(`/api/camera?index=${e.target.value}`, "Falha ao trocar a câmera");
+$("scanBtn").onclick = () => post("/api/cameras/buscar", "Falha ao buscar câmeras");
+
+// Lista de câmeras (só redesenha quando muda, para não fechar o menu aberto)
+function renderCams(v){
+  const btn = $("scanBtn");
+  btn.disabled = v.scanning;
+  btn.textContent = v.scanning ? "⏳ Buscando…" : "🔍 Buscar câmeras";
+  if (!v.scanning && renderCams.wasScanning) toast(v.cams.length ?
+      `${v.cams.length} câmera${v.cams.length > 1 ? "s" : ""} encontrada${v.cams.length > 1 ? "s" : ""}` :
+      "Nenhuma câmera encontrada", v.cams.length > 0);
+  renderCams.wasScanning = v.scanning;
+
+  let cams = v.cams.slice();
+  if (!cams.some(c => c.index === v.camIndex))   // a escolhida não apareceu na busca
+    cams.push({index: v.camIndex, name: `Câmera ${v.camIndex}`, size: null, busy: false, missing: true});
+  const key = JSON.stringify([cams, v.scanning]);
+  if (key !== renderCams.key && document.activeElement !== $("camSel")) {
+    renderCams.key = key;
+    $("camSel").innerHTML = v.scanning && !v.cams.length ? `<option>Buscando câmeras…</option>` :
+      cams.map(c => `<option value="${c.index}">${c.index} · ${esc(c.name)}` +
+        (c.busy ? " (ocupada por outro programa)" : c.missing ? " (não encontrada)" : c.dark ? " (imagem preta)" :
+         c.size ? ` · ${c.size[0]}×${c.size[1]}` : "") +
+        `</option>`).join("");
+  }
+  if (document.activeElement !== $("camSel")) $("camSel").value = String(v.camIndex);
+}
+$("calBtn").onclick = async () => { if (await post("/api/calibrar", "Falha ao calibrar")) toast("Calibrado: essa é a posição “reta” ✓", true); };
+$("mirBtn").onclick = () => post(`/api/espelhar?on=${S && S.vision.mirror ? 0 : 1}`, "Falha");
+$("relBtn").onclick = () => post(S && S.released ? "/api/resume" : "/api/release", "Falha");
+$("portSel").onchange = e => post(`/api/port?name=${encodeURIComponent(e.target.value)}`, "Falha ao trocar a porta");
+
+$("enrollBtn").onclick = async () => {
+  if (A && A.enroll && A.enroll.state === "capturando") return post("/api/cancelar", "Falha ao cancelar");
+  const nome = $("name").value.trim();
+  if (!nome) { toast("Digite o nome da pessoa"); $("name").focus(); return; }
+  if (await post("/api/cadastrar", "Falha ao cadastrar", {nome})) $("name").value = "";
+};
+$("name").addEventListener("keydown", e => { if (e.key === "Enter") $("enrollBtn").click(); });
+
+// Vídeo: se o programa reiniciar, tenta abrir de novo
+const video = $("video");
+function openVideo(){ video.src = "/video?t=" + Date.now(); }
+video.onerror = () => setTimeout(openVideo, 2000);
+openVideo();
+
+function connState(s){
+  if (!serverOk)          return ["bad",  "Programa offline", "O reconhecimento.py não está rodando."];
+  if (s.released)         return ["warn", "Porta liberada", "A porta foi liberada. Clique em “Reconectar” para voltar."];
+  if (s.boardAnswering)   return ["ok",   "Placa conectada", ""];
+  if (s.portOpen)         return ["warn", "Sem resposta", "A porta está aberta, mas a placa não responde. Ela está com o firmware deste projeto?"];
+  return ["bad", "Placa desconectada", s.error || "Placa não encontrada."];
+}
+
+function renderPeople(people){
+  const here = new Set((A && A.faces || []).map(f => f.name).filter(Boolean));
+  const key = JSON.stringify([people, [...here]]);
+  if (key === renderPeople.key) return;
+  renderPeople.key = key;
+  $("peopleCount").style.display = people.length ? "" : "none";
+  $("peopleCount").textContent = people.length;
+  $("people").innerHTML = people.length ? people.map(p =>
+    `<div class="person${here.has(p.nome) ? " here" : ""}">` +
+    `<img src="/foto/${encodeURIComponent(p.foto)}" alt="">` +
+    `<div class="info"><b>${esc(p.nome)}${here.has(p.nome) ? " · na câmera" : ""}</b>` +
+    `<small>${p.amostras} amostras · desde ${new Date(p.criado*1000).toLocaleDateString("pt-BR")}</small></div>` +
+    `<button class="btn danger" data-nome="${esc(p.nome)}">Remover</button></div>`).join("")
+    : `<p class="empty">Ninguém cadastrado ainda. Use “Cadastrar pessoa”.</p>`;
+  [...$("people").querySelectorAll("button")].forEach(b => b.onclick = () => {
+    if (!b.classList.contains("confirm")) {          // 1º clique pede confirmação
+      b.classList.add("confirm"); b.textContent = "Confirmar?";
+      setTimeout(() => { b.classList.remove("confirm"); b.textContent = "Remover"; }, 3000);
+      return;
+    }
+    post(`/api/remover?nome=${encodeURIComponent(b.dataset.nome)}`, "Falha ao remover")
+      .then(ok => ok && toast(`${b.dataset.nome} removido(a)`, true));
+  });
+}
+
+function render(s){
+  S = s;
+  const [cls, label, msg] = connState(s || {});
+  const portName = s && s.port && cls === "ok" ? " · " + s.port.name : "";
+  $("topBadge").className = "badge " + cls; $("topBadge").textContent = label + portName;
+  $("badge").className = "badge " + cls;    $("badge").textContent = label.replace("Placa ", "");
+  $("err").textContent = msg; $("err").style.display = msg ? "block" : "none";
+  if (!s) return;
+
+  const v = s.vision;
+  const camCls = !serverOk ? "bad" : v.camOk ? "ok" : "bad";
+  $("camBadge").className = "badge " + camCls;
+  $("camBadge").textContent = v.camOk ? `Câmera ${v.camIndex} · ${v.fps} fps` : "Câmera sem imagem";
+  const camMsg = v.camError || (v.camOk && v.camDark ?
+    "A câmera está mandando só imagem preta: o obturador/tampa está fechado? Ou escolha outra câmera." : "");
+  $("camErr").textContent = camMsg; $("camErr").style.display = camMsg ? "block" : "none";
+  $("cam").classList.toggle("nocam", !v.camOk || v.camDark);
+  $("camOff").textContent = camMsg || "Abrindo a câmera…";
+  const cam = v.cams.find(c => c.index === v.camIndex);
+  $("cIdx").textContent = cam ? `${v.camIndex} · ${cam.name}` : `${v.camIndex}`;
+  $("cRes").textContent = v.frameSize[0] ? `${v.frameSize[0]} × ${v.frameSize[1]}` : "—";
+  $("cFps").textContent = v.fps;
+  $("cMir").textContent = v.mirror ? "sim (o emoji imita como espelho)" : "não";
+  $("cThr").textContent = `${Math.round(v.threshold*100)}% de semelhança`;
+  $("cCal").textContent = `nariz ${v.calib.r} · altura ${v.calib.t}`;
+  $("mirBtn").classList.toggle("on", v.mirror);
+  renderCams(v);
+  [...$("moods").children].forEach(b => b.classList.toggle("on", +b.dataset.id === v.moodOverride));
+  document.title = (cls === "ok" && v.camOk ? "🟢 " : "🔴 ") + "ESP32 Reconhecimento Facial";
+
+  renderPeople(s.people);
+
+  const p = s.port, b = s.board;
+  $("port").textContent    = p ? p.name : "—";
+  $("desc").textContent    = p ? p.description : "—";
+  $("chip").textContent    = p && p.chip ? p.chip : "—";
+  $("fw").textContent      = b ? `${b.fw} v${b.ver}` : "—";
+  $("uptime").textContent  = b ? fmtDur(b.uptime) : "—";
+  $("oledOk").textContent  = b ? (b.oled ? "✅ encontrado" : "❌ não encontrado (veja os fios)") : "—";
+  $("bState").textContent  = b ? `${b.state}${b.name ? " · " + b.name : ""} · ${MOODS[b.mood] ? MOODS[b.mood].join(" ") : b.mood}` : "—";
+  $("bFps").textContent    = b ? `${b.fps} por segundo` : "—";
+  $("bLooks").textContent  = b ? b.looks.toLocaleString("pt-BR") : "—";
+  $("lastAns").textContent = s.lastAnswerAgo != null && s.portOpen ? `há ${s.lastAnswerAgo.toFixed(1)} s` : "—";
+  $("relBtn").textContent  = s.released ? "Reconectar" : "Liberar porta";
+  [...$("leds").children].forEach((el, i) => el.classList.toggle("on", !!(b && b.leds[i] === 1)));
+
+  const sel = $("portSel");
+  if (document.activeElement !== sel) {
+    const opts = [["auto", "Automático (detecta o ESP32)"]].concat(
+      s.ports.map(x => [x.name, `${x.name} — ${x.description}`]));
+    sel.innerHTML = opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+    sel.value = s.mode === "auto" ? "auto" : s.wantedPort;
+  }
+  $("ports").innerHTML = s.ports.length ? s.ports.map(x =>
+    `<tr class="${p && p.name === x.name ? "cur" : ""}"><td>${esc(x.name)}${x.likelyEsp32 ? " ⭐" : ""}</td>` +
+    `<td>${esc(x.description)}</td><td>${esc(x.vidpid || "—")}</td></tr>`).join("")
+    : `<tr><td colspan="3">Nenhuma porta serial encontrada.</td></tr>`;
+
+  const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  log.innerHTML = s.log.map(l => {
+    const t = new Date(l.t * 1000).toLocaleTimeString("pt-BR");
+    return `<span class="${l.line.startsWith("[PC]") ? "pc" : ""}">${t}  ${esc(l.line)}</span>`;
+  }).join("\n");
+  if (atEnd) log.scrollTop = log.scrollHeight;
+}
+
+// --- Comunicação com o reconhecimento.py ---
+async function pollStatus(){
+  try {
+    const r = await fetch("/api/status", {cache:"no-store"});
+    serverOk = true; render(await r.json());
+  } catch(e){ serverOk = false; render(S); }
+}
+async function pollAlvo(){
+  try {
+    const r = await fetch("/api/alvo", {cache:"no-store"});
+    renderAlvo(await r.json());
+  } catch(e){ renderAlvo(null); }
+  setTimeout(pollAlvo, 100);
+}
+async function post(url, failMsg, body){
+  try {
+    const opt = {method:"POST"};
+    if (body) { opt.body = JSON.stringify(body); opt.headers = {"Content-Type":"application/json"}; }
+    const r = await fetch(url, opt);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || failMsg);
+    render(j);
+    return true;
+  } catch(e){ toast(e.message || failMsg); return false; }
+}
+
+pollStatus();
+setInterval(pollStatus, 1000);
+pollAlvo();
+</script>
+</body>
+</html>

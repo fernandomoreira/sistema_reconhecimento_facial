@@ -1,0 +1,7 @@
+.pio/
+.vscode/
+
+__pycache__/
+
+# rostos cadastrados (dados pessoais: ficam só neste PC)
+pc/rostos/

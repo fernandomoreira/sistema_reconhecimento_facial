@@ -1,0 +1,4 @@
+opencv-python>=4.8
+numpy
+pyserial
+pygrabber; sys_platform == "win32"   # nomes das câmeras (opcional)
