@@ -100,6 +100,32 @@
   .person .info small{color:var(--muted)}
   .person.here{border-color:rgba(34,197,94,.55);background:rgba(34,197,94,.06)}
   .empty{color:var(--muted);font-size:13px;margin:0}
+  .person.auto{border-color:rgba(245,158,11,.45)}
+  .person .tag{display:inline-block;margin-left:6px;font-size:11px;font-weight:600;color:var(--warn);
+    background:rgba(245,158,11,.12);padding:1px 7px;border-radius:99px;vertical-align:1px}
+  .person .edit{display:flex;gap:6px;flex-wrap:wrap}
+  .person .edit input{padding:5px 9px;font-size:14px;min-width:120px}
+  .person .acts{display:flex;gap:6px;flex:none}
+
+  /* --- Captura automática --- */
+  .switch{display:flex;align-items:center;gap:12px;cursor:pointer;user-select:none;font-size:15px}
+  .switch input{position:absolute;opacity:0;width:0;height:0}
+  .switch .slider{position:relative;width:52px;height:28px;border-radius:99px;background:#2a2f39;
+    border:1px solid var(--line);transition:.2s;flex:none}
+  .switch .slider::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;
+    background:#c9ced8;transition:.2s}
+  .switch input:checked + .slider{background:var(--ok);border-color:var(--ok)}
+  .switch input:checked + .slider::after{transform:translateX(24px);background:#fff}
+  .switch input:focus-visible + .slider{box-shadow:0 0 0 3px rgba(59,130,246,.35)}
+  .switch b.sim{color:var(--ok)}
+  .opts{display:grid;gap:8px;margin-top:12px}
+  .opt{display:flex;gap:10px;align-items:flex-start;padding:9px 11px;background:#11141a;border:1px solid var(--line);
+    border-radius:12px;cursor:pointer}
+  .opt input{margin:3px 0 0;accent-color:var(--accent)}
+  .opt span{display:flex;flex-direction:column}
+  .opt small{color:var(--muted);font-size:12.5px}
+  .opt:has(input:checked){border-color:var(--accent);background:rgba(59,130,246,.08)}
+  .msg.look{color:var(--warn);font-weight:700;font-size:15px}
 
   .moods{display:flex;gap:8px;flex-wrap:wrap}
 
@@ -216,11 +242,33 @@
       amostras (ajuda com óculos, outra luz etc.).</p>
   </section>
 
+  <!-- Captura automática de desconhecidos -->
+  <section class="card">
+    <h2>🤖 Captura automática</h2>
+    <label class="switch">
+      <input type="checkbox" id="autoSw" role="switch">
+      <span class="slider"></span>
+      <span>Captura automática: <b id="autoTxt">Não</b></span>
+    </label>
+    <div class="opts" id="autoOpts" style="display:none">
+      <label class="opt"><input type="radio" name="autoModo" value="qualquer">
+        <span><b>Capturar qualquer pessoa</b><small>Captura quem passar na frente da câmera</small></span></label>
+      <label class="opt"><input type="radio" name="autoModo" value="especifico">
+        <span><b>Captura específica</b><small id="espTxt">Só de quem olhar fixamente para a câmera por algum tempo</small></span></label>
+    </div>
+    <div class="progress" id="autoProg"><i></i></div>
+    <p class="msg" id="autoMsg"></p>
+    <p class="msg" id="autoAviso"></p>
+    <p class="hint">Só rostos <b>não reconhecidos</b> são capturados. Cada um vira “Desconhecido 1”,
+      “Desconhecido 2”… em <b>Pessoas cadastradas</b>, onde dá para editar o nome depois.</p>
+  </section>
+
   <!-- Pessoas -->
   <section class="card">
     <h2>👥 Pessoas cadastradas <span class="badge ok" id="peopleCount" style="display:none"></span></h2>
     <div class="people" id="people"></div>
-    <p class="hint">Os rostos ficam só neste PC, em <code>pc/rostos/</code>.</p>
+    <p class="hint">Use ✏️ para editar o nome (as aparições antigas acompanham). Os rostos ficam só
+      neste PC, em <code>pc/rostos/</code>.</p>
   </section>
 
   <!-- Expressão -->
@@ -627,7 +675,47 @@ function renderAlvo(a){
   $("enrollBtn").classList.toggle("primary", !busy);
   if (en && en.state !== renderAlvo.lastState && en.state === "ok") { toast(en.msg, true); pollStatus(); }
   renderAlvo.lastState = en && en.state;
+  if (a && a.auto) renderAuto(a.auto, a.t);
 }
+
+// ===========================================================================
+// Captura automática
+// ===========================================================================
+let autoLock = 0;   // logo depois de um clique, não deixa uma resposta antiga desfazer a escolha
+function renderAuto(au, agora){
+  if (Date.now() > autoLock) {
+    $("autoSw").checked = au.on;
+    document.querySelectorAll('input[name="autoModo"]').forEach(r => r.checked = r.value === au.mode);
+  }
+  const on = $("autoSw").checked;
+  $("autoTxt").textContent = on ? "Sim" : "Não";
+  $("autoTxt").className = on ? "sim" : "";
+  $("autoOpts").style.display = on ? "" : "none";
+  $("espTxt").textContent = `Só de quem olhar fixamente para a câmera por ${au.fixS} s`;
+
+  const cap = au.state === "capturando", fix = au.state === "fixando";
+  $("autoProg").style.display = on && (cap || fix) ? "block" : "none";
+  $("autoProg").firstChild.style.width = (cap ? au.count/au.total : fix ? au.fix : 0)*100 + "%";
+  $("autoMsg").textContent = !on ? "" : cap ? `${au.msg} (${au.count}/${au.total})`
+    : fix ? `${au.msg} ${(au.fix*au.fixS).toFixed(1)}/${au.fixS} s` : au.msg;
+  $("autoMsg").className = "msg" + (cap && au.mode === "especifico" ? " look" : "");
+  const recente = au.aviso && agora - au.avisoT < 6;
+  $("autoAviso").textContent = on && recente ? au.aviso : "";
+  $("autoAviso").className = "msg" + (au.aviso && au.aviso.startsWith("Salvo") ? " ok" : "");
+
+  // Alguém novo foi salvo: avisa e atualiza a lista de pessoas
+  if (renderAuto.seq != null && au.seq !== renderAuto.seq) { toast(`${au.last} salvo(a) pela captura automática`, true); pollStatus(); }
+  renderAuto.seq = au.seq;
+}
+function setAuto(){
+  autoLock = Date.now() + 800;
+  const on = $("autoSw").checked ? 1 : 0;
+  const modo = (document.querySelector('input[name="autoModo"]:checked') || {}).value || "qualquer";
+  if (A && A.auto) renderAuto(A.auto, A.t);   // mostra/esconde as opções na hora
+  post(`/api/auto?on=${on}&modo=${modo}`, "Falha ao mudar a captura automática");
+}
+$("autoSw").onchange = setAuto;
+document.querySelectorAll('input[name="autoModo"]').forEach(r => r.onchange = setAuto);
 
 // ===========================================================================
 // Status geral (1x por segundo)
@@ -705,6 +793,7 @@ function connState(s){
 }
 
 function renderPeople(people){
+  if (renderPeople.editing) return;   // editando um nome: não redesenha a lista
   const here = new Set((A && A.faces || []).map(f => f.name).filter(Boolean));
   const key = JSON.stringify([people, [...here]]);
   if (key === renderPeople.key) return;
@@ -712,13 +801,16 @@ function renderPeople(people){
   $("peopleCount").style.display = people.length ? "" : "none";
   $("peopleCount").textContent = people.length;
   $("people").innerHTML = people.length ? people.map(p =>
-    `<div class="person${here.has(p.nome) ? " here" : ""}">` +
+    `<div class="person${here.has(p.nome) ? " here" : ""}${p.auto ? " auto" : ""}">` +
     `<img src="/foto/${encodeURIComponent(p.foto)}" alt="">` +
-    `<div class="info"><b>${esc(p.nome)}${here.has(p.nome) ? " · na câmera" : ""}</b>` +
+    `<div class="info"><b>${esc(p.nome)}${here.has(p.nome) ? " · na câmera" : ""}` +
+    `${p.auto ? `<span class="tag" title="Capturado automaticamente: edite o nome">automático</span>` : ""}</b>` +
     `<small>${p.amostras} amostras · desde ${new Date(p.criado*1000).toLocaleDateString("pt-BR")}</small></div>` +
-    `<button class="btn danger" data-nome="${esc(p.nome)}">Remover</button></div>`).join("")
-    : `<p class="empty">Ninguém cadastrado ainda. Use “Cadastrar pessoa”.</p>`;
-  [...$("people").querySelectorAll("button")].forEach(b => b.onclick = () => {
+    `<div class="acts"><button class="btn chip" data-edit="${esc(p.nome)}" title="Editar o nome">✏️</button>` +
+    `<button class="btn danger" data-nome="${esc(p.nome)}">Remover</button></div></div>`).join("")
+    : `<p class="empty">Ninguém cadastrado ainda. Use “Cadastrar pessoa” ou a captura automática.</p>`;
+  [...$("people").querySelectorAll("button[data-edit]")].forEach(b => b.onclick = () => editName(b));
+  [...$("people").querySelectorAll("button[data-nome]")].forEach(b => b.onclick = () => {
     if (!b.classList.contains("confirm")) {          // 1º clique pede confirmação
       b.classList.add("confirm"); b.textContent = "Confirmar?";
       setTimeout(() => { b.classList.remove("confirm"); b.textContent = "Remover"; }, 3000);
@@ -727,6 +819,40 @@ function renderPeople(people){
     post(`/api/remover?nome=${encodeURIComponent(b.dataset.nome)}`, "Falha ao remover")
       .then(ok => ok && toast(`${b.dataset.nome} removido(a)`, true));
   });
+}
+
+// Editar o nome: troca a linha da pessoa por um campo de texto + Salvar/Cancelar
+function editName(btn){
+  const nome = btn.dataset.edit, row = btn.closest(".person");
+  renderPeople.editing = nome;
+  row.querySelector(".acts").style.display = "none";
+  row.querySelector(".info").innerHTML =
+    `<div class="edit"><input type="text" maxlength="20" value="${esc(nome)}" aria-label="Novo nome">` +
+    `<button class="btn chip on">Salvar</button><button class="btn chip">Cancelar</button></div>`;
+  const [inp, save, cancel] = row.querySelectorAll(".edit > *");
+  const done = () => { renderPeople.editing = null; renderPeople.key = null; if (S) renderPeople(S.people); };
+  inp.focus(); inp.select();
+  inp.oninput = () => { delete save.dataset.juntar; save.textContent = "Salvar"; save.classList.remove("danger", "confirm"); };
+  inp.onkeydown = e => { if (e.key === "Enter") save.click(); if (e.key === "Escape") done(); };
+  cancel.onclick = done;
+  save.onclick = async () => {
+    const novo = inp.value.trim();
+    if (!novo) { toast("Digite o nome da pessoa"); inp.focus(); return; }
+    if (novo === nome) return done();
+    try {
+      const r = await fetch("/api/renomear", {method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({nome, novo, juntar: !!save.dataset.juntar})});
+      const j = await r.json();
+      if (r.status === 409 && j.existe) {   // já existe: o 2º clique junta os dois
+        save.dataset.juntar = 1; save.textContent = "Juntar?"; save.classList.add("danger", "confirm");
+        return toast(j.error);
+      }
+      if (!r.ok) throw new Error(j.error);
+      toast(save.dataset.juntar ? `${nome} juntado(a) com ${novo}` : `${nome} agora é ${novo}`, true);
+      renderPeople.editing = null; renderPeople.key = null;
+      render(j);
+    } catch(e){ toast(e.message || "Falha ao salvar o nome"); }
+  };
 }
 
 function render(s){

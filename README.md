@@ -182,7 +182,8 @@ painel em **http://localhost:8000**.
 | **🎯 Calibrar / 🪞 Espelhar** | define a "cabeça reta" / imagem espelhada (o emoji imita como espelho) |
 | **🔍 Buscar câmeras** | procura as câmeras ligadas ao PC, com o nome do Windows; avisa se uma está **ocupada** ou com **imagem preta** |
 | **➕ Cadastrar pessoa** | 15 fotos em ~3 s; cadastrar o mesmo nome de novo **junta** amostras (óculos, outra luz...) |
-| **👥 Pessoas cadastradas** | foto, nº de amostras e **Remover** (pede confirmação) |
+| **🤖 Captura automática** | botão deslizante **Sim/Não**. Com Sim, escolha: **Capturar qualquer pessoa** (quem passar na frente da câmera) ou **Captura específica** (só quem olhar fixamente para a câmera por 2 s; a câmera e o visor mostram “Permaneça olhando para finalizar a captura”). Só rostos não reconhecidos são capturados (15 fotos) e salvos como **Desconhecido 1, 2, 3…** |
+| **👥 Pessoas cadastradas** | foto, nº de amostras, **✏️ editar o nome** (as aparições antigas acompanham; nome que já existe pode ser **juntado**) e **Remover** (pede confirmação) |
 | **🎭 Expressão** | **Automático** ou uma expressão fixa (Neutro, Feliz, Curioso, Surpreso, Bravo, Triste) |
 | **💡 LEDs** | embaixo da câmera: os 3 LEDs da placa, acesos em tempo real |
 | **🕒 Últimas aparições** | as 5 aparições mais recentes: foto, pessoa, entrada, saída e tempo na câmera (conta ao vivo para quem ainda está lá) |
@@ -246,6 +247,8 @@ Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Trist
 | GET | `/foto/<arquivo>.jpg` | foto de uma pessoa cadastrada |
 | POST | `/api/cadastrar` (corpo `{"nome": "..."}`) · `/api/cancelar` | cadastro |
 | POST | `/api/remover?nome=...` | apaga uma pessoa |
+| POST | `/api/renomear` (corpo `{"nome": "...", "novo": "...", "juntar": false}`) | troca o nome (409 se já existe e `juntar` é falso) |
+| POST | `/api/auto?on=0\|1&modo=qualquer\|especifico` | captura automática de desconhecidos |
 | POST | `/api/humor?id=-1..5` | −1 = automático |
 | POST | `/api/calibrar` | posição atual = cabeça reta |
 | POST | `/api/espelhar?on=0\|1` · `/api/camera?index=0..9` | câmera |

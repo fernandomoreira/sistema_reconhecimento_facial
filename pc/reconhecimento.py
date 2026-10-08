@@ -27,6 +27,11 @@ Rotas da API local:
     POST /api/cadastrar  {"nome": "..."}   captura o rosto da frente da câmera
     POST /api/cancelar                cancela o cadastro em andamento
     POST /api/remover?nome=...        apaga uma pessoa
+    POST /api/renomear {"nome": "...", "novo": "...", "juntar": false}
+                                      troca o nome (juntar = mistura com quem já tem o nome novo)
+    POST /api/auto?on=0|1&modo=qualquer|especifico
+                                      captura automática de desconhecidos (salvos como
+                                      "Desconhecido N"); especifico = só quem olhar fixo
     POST /api/humor?id=-1..5          -1 = automático; 0..5 = expressão fixa
     POST /api/calibrar                "de frente para a câmera" = cabeça reta
     POST /api/espelhar?on=0|1         espelha a imagem (o emoji imita como espelho)
@@ -121,6 +126,17 @@ ENROLL_SAMPLES = 15     # fotos por cadastro
 ENROLL_TIMEOUT_S = 20
 ENROLL_MIN_W = 0.12     # largura mínima do rosto (fração da imagem) para cadastrar
 MAX_SAMPLES = 60        # máximo de amostras guardadas por pessoa
+# Captura automática de desconhecidos (salvos como "Desconhecido 1", "Desconhecido 2"...)
+AUTO_SAMPLES = ENROLL_SAMPLES  # fotos por captura (as mesmas do cadastro manual)
+AUTO_VOTOS = 3          # o rosto precisa ter sido "desconhecido" em N reconhecimentos seguidos
+AUTO_FIXAR_S = 2.0      # modo específico: olhando fixo por esse tempo inicia a captura
+AUTO_OLHAR_GRAUS = 15   # modo específico: "olhando para a câmera" = yaw e pitch até isso
+AUTO_FRENTE_GRAUS = 35  # modo qualquer: só tira foto com o rosto até esse ângulo
+AUTO_DESVIO_S = 1.0     # modo específico: desviou o olhar por mais que isso = interrompe
+AUTO_TIMEOUT_S = 15     # captura que não termina nesse tempo é abandonada
+AUTO_PREFIXO = "Desconhecido"
+MSG_OLHANDO = "Permaneça olhando para finalizar a captura"
+OLED_OLHANDO = "Permaneça olhando"  # o mesmo aviso no visor (cabe em NAME_MAX)
 NAME_MAX = 20           # cabe numa linha do OLED
 FACE_MAX = 8            # emojis que cabem no OLED (= FACE_MAX de src/face.h)
 BOOT_ID = f"{time.time():.3f}"  # identifica esta execução do programa
@@ -438,12 +454,17 @@ class FaceDB:
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.people = {}  # nome -> {"emb": array (N, 128), "foto": "arquivo.jpg", "criado": ts}
+        # nome -> {"emb": array (N, 128), "foto": "arquivo.jpg", "criado": ts,
+        #          "auto": True se veio da captura automática e ainda não ganhou nome}
+        self.people = {}
+        self.unknown_count = 0  # último N usado em "Desconhecido N" (não repete números)
         if DB_FILE.exists():
             data = json.loads(DB_FILE.read_text(encoding="utf-8"))
+            self.unknown_count = int(data.get("contadorDesconhecidos", 0))
             for name, p in data.get("pessoas", {}).items():
                 emb = np.array(p["embeddings"], dtype=np.float32).reshape(-1, 128)
-                self.people[name] = {"emb": emb, "foto": p.get("foto", ""), "criado": p.get("criado", 0)}
+                self.people[name] = {"emb": emb, "foto": p.get("foto", ""), "criado": p.get("criado", 0),
+                                     "auto": bool(p.get("auto", False))}
         self._rebuild()
 
     def _rebuild(self):
@@ -456,15 +477,21 @@ class FaceDB:
 
     def _save(self):
         FACES_DIR.mkdir(exist_ok=True)
-        data = {"pessoas": {
-            name: {"embeddings": np.round(p["emb"], 5).tolist(), "foto": p["foto"], "criado": p["criado"]}
+        data = {"contadorDesconhecidos": self.unknown_count, "pessoas": {
+            name: {"embeddings": np.round(p["emb"], 5).tolist(), "foto": p["foto"], "criado": p["criado"],
+                   "auto": p.get("auto", False)}
             for name, p in self.people.items()}}
         tmp = DB_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         tmp.replace(DB_FILE)
 
-    def add(self, name, embs, photo_jpg):
+    def add(self, name, embs, photo_jpg, auto=False):
         with self.lock:
+            if auto:  # captura automática: o nome é o próximo "Desconhecido N"
+                nums = [int(m.group(1)) for n in self.people
+                        if (m := re.fullmatch(AUTO_PREFIXO + r" (\d+)", n))]
+                self.unknown_count = max([self.unknown_count] + nums) + 1
+                name = f"{AUTO_PREFIXO} {self.unknown_count}"
             embs = np.asarray(embs, dtype=np.float32)
             old = self.people.get(name)
             if old:  # já existe: junta as amostras (melhora o reconhecimento)
@@ -477,7 +504,34 @@ class FaceDB:
             if photo_jpg is not None:
                 (FACES_DIR / foto).write_bytes(photo_jpg)
             self.people[name] = {"emb": embs, "foto": foto,
-                                 "criado": old["criado"] if old else time.time()}
+                                 "criado": old["criado"] if old else time.time(),
+                                 "auto": old["auto"] if old else auto}
+            self._save()
+            self._rebuild()
+            return name
+
+    def rename(self, old, new, merge=False):
+        """Troca o nome. Se o nome novo já existe: com merge junta as amostras, sem
+        merge levanta KeyError. Levanta LookupError se old não existe."""
+        with self.lock:
+            p = self.people.get(old)
+            if p is None:
+                raise LookupError(old)
+            if new == old:
+                p["auto"] = False
+            elif new in self.people:
+                if not merge:
+                    raise KeyError(new)
+                dest = self.people[new]
+                dest["emb"] = np.vstack([dest["emb"], p["emb"]])[-MAX_SAMPLES:]
+                dest["auto"] = False
+                del self.people[old]
+                if p["foto"]:
+                    (FACES_DIR / p["foto"]).unlink(missing_ok=True)
+            else:
+                del self.people[old]
+                p["auto"] = False
+                self.people[new] = p
             self._save()
             self._rebuild()
 
@@ -504,7 +558,8 @@ class FaceDB:
 
     def list(self):
         with self.lock:
-            return [{"nome": n, "amostras": len(p["emb"]), "foto": p["foto"], "criado": p["criado"]}
+            return [{"nome": n, "amostras": len(p["emb"]), "foto": p["foto"], "criado": p["criado"],
+                     "auto": p.get("auto", False)}
                     for n, p in sorted(self.people.items(), key=lambda kv: kv[0].lower())]
 
     def photo_path(self, filename):
@@ -605,6 +660,12 @@ class Vision:
         self.target = None           # pessoa principal (a mais perto): medidores e Calibrar
         self.targets = []            # o que vai para a placa: 1 dict por emoji, da esquerda p/ direita
         self.enroll = None
+        # Captura automática (ligada pelo painel)
+        self.auto_on = False
+        self.auto_mode = "qualquer"  # "qualquer" = quem passar; "especifico" = quem olhar fixo
+        self.auto = None             # captura em andamento: {"id": track, "samples": [...], ...}
+        self.auto_info = {"state": "parado", "msg": "", "count": 0, "fix": 0.0, "last": "", "seq": 0}
+        self.renames = deque()       # (antigo, novo) para atualizar os rostos na câmera
         threading.Thread(target=self._run, daemon=True).start()
 
     # ----- câmera -----
@@ -784,6 +845,7 @@ class Vision:
         _, faces = self.det.detect(frame)
         faces = [] if faces is None else list(faces)
         visible = self._update_tracks(faces, now)
+        self._apply_renames()
 
         # Reconhece no máximo MAX_RECOG rostos por quadro (os que esperam há mais
         # tempo primeiro): com muita gente, todos são reconhecidos, só que mais devagar
@@ -805,7 +867,23 @@ class Vision:
         self.reg.atualizar(visible, self.camera_name(), frame, now)
         self._update_targets(visible, w, h, now)
         self._enroll_step(frame, visible, now)
+        self._auto_step(frame, visible, now)
         self._publish(frame, visible, target)
+
+    def _apply_renames(self):
+        """Pessoa renomeada no painel: troca o nome nos rostos que estão na câmera
+        (votos do reconhecimento e da aparição em andamento)."""
+        while self.renames:
+            old, new = self.renames.popleft()
+            for tr in self.tracks:
+                tr["votes"] = deque((new if v == old else v for v in tr["votes"]), maxlen=5)
+                if tr["name"] == old:
+                    tr["name"] = new
+                sess = tr.get("sess")
+                if sess and old in sess["votos"]:
+                    sess["votos"][new] += sess["votos"].pop(old)
+                if sess and old in sess["conf"]:
+                    sess["conf"][new] = max(sess["conf"].pop(old), sess["conf"].get(new, 0.0))
 
     def _update_targets(self, visible, w, h, now):
         """Um alvo por emoji: as max_faces pessoas mais perto, da esquerda para a direita."""
@@ -863,7 +941,8 @@ class Vision:
             "roll": int(round(clamp(p["roll"], -45, 45))),
             "size": int(round(clamp(p["size"], 0, 100))),
             "mood": mood,
-            "name": tr["name"],
+            # Captura automática do modo específico: o visor pede para continuar olhando
+            "name": OLED_OLHANDO if self._capturing_specific(tr) else tr["name"],
             "known": bool(tr["name"]),
             "score": round(tr["score"], 3),
         }
@@ -914,11 +993,138 @@ class Vision:
             en.update(state="ok", msg=f"{en['name']} cadastrado(a)!")
             print(f"Pessoa cadastrada: {en['name']}")
 
+    # ----- captura automática -----
+    def set_auto(self, on, mode):
+        # Só muda as opções: quem para/reinicia a captura é a thread da câmera
+        self.auto_mode = mode
+        self.auto_on = on
+
+    def _angles(self, face):
+        """(yaw, pitch) em graus, já com a calibração: 0, 0 = olhando reto para a câmera."""
+        r, t, _ = head_pose(face)
+        return degrees(atan((r - self.calib["r"]) / 0.45)), (self.calib["t"] - t) * 120
+
+    def _capturing_specific(self, tr):
+        a = self.auto
+        return a is not None and a["id"] == tr["id"] and self.auto_mode == "especifico"
+
+    def _auto_set(self, state, msg, count=0, fix=0.0, ident=None, aviso=None, saved=None):
+        info = dict(self.auto_info, state=state, msg=msg, count=count, fix=round(fix, 2), id=ident)
+        if aviso:  # acontecimento (salvou, interrompeu...): o painel mostra por alguns segundos
+            info.update(aviso=aviso, avisoT=time.time())
+        if saved:
+            info.update(last=saved, seq=info["seq"] + 1)
+        self.auto_info = info
+
+    def _auto_end(self, aviso, tr=None, desistir=False):
+        """Termina a captura em andamento sem salvar."""
+        self.auto = None
+        if tr is not None:
+            tr["fix"] = None
+            if desistir:          # não tenta de novo enquanto essa pessoa estiver na câmera
+                tr["auto_feito"] = True
+        self._auto_set("aguardando", "", aviso=aviso)
+
+    def _auto_candidate(self, tr, w):
+        """Desconhecido de verdade (os últimos reconhecimentos não acharam ninguém),
+        perto o bastante e que ainda não foi capturado."""
+        votes = list(tr["votes"])
+        return (not tr["name"] and not tr.get("auto_feito") and len(votes) >= AUTO_VOTOS
+                and not any(votes[-AUTO_VOTOS:]) and tr["box"][2] >= ENROLL_MIN_W * w)
+
+    def _auto_step(self, frame, visible, now):
+        specific = self.auto_mode == "especifico"
+        paused = self.enroll and self.enroll["state"] == "capturando"
+        if not self.auto_on or paused or not specific:
+            for t in visible:   # o cronômetro de "olhando fixo" só vale no modo específico
+                t["fix"] = None
+        if not self.auto_on or paused:
+            self.auto = None
+            return self._auto_set("pausado", "Pausada durante o cadastro manual") if self.auto_on                 else self._auto_set("desligado", "")
+        w = frame.shape[1]
+
+        cap = self.auto
+        if cap is not None and cap["mode"] != self.auto_mode:  # trocou o modo no painel
+            cap = self.auto = None
+        if cap is None:
+            cands = [t for t in visible if self._auto_candidate(t, w)]
+            cand_ids = {t["id"] for t in cands}
+            if not specific:
+                if not cands:
+                    return self._auto_set("aguardando", "Aguardando alguém desconhecido passar na câmera")
+                tr = cands[0]   # o mais perto
+            else:
+                # Específico: cada candidato tem o seu cronômetro de "olhando fixo"
+                tr = None
+                for t in visible:
+                    yaw, pitch = self._angles(t["face"])
+                    looking = abs(yaw) <= AUTO_OLHAR_GRAUS and abs(pitch) <= AUTO_OLHAR_GRAUS
+                    t["fix"] = (t.get("fix") or now) if t["id"] in cand_ids and looking else None
+                    if t["fix"] and (tr is None or t["fix"] < tr["fix"]):
+                        tr = t
+                if tr is None:
+                    return self._auto_set("aguardando", "Aguardando alguém olhar fixo para a câmera")
+                if now - tr["fix"] < AUTO_FIXAR_S:
+                    return self._auto_set("fixando", "Alguém está olhando fixo para a câmera…",
+                                          fix=(now - tr["fix"]) / AUTO_FIXAR_S, ident=tr["id"])
+            cap = self.auto = {"id": tr["id"], "mode": self.auto_mode, "samples": [], "photo": None,
+                               "next": 0.0, "start": now, "away": None}
+            print(f"Captura automática iniciada (rosto {tr['id']})")
+
+        tr = next((t for t in visible if t["id"] == cap["id"]), None)
+        if tr is None:
+            return self._auto_end("Captura interrompida: a pessoa saiu da câmera")
+        if tr["name"]:   # foi reconhecido no meio do caminho: não precisa capturar
+            return self._auto_end(f"{tr['name']} já está cadastrado(a)", tr, desistir=True)
+        if now - cap["start"] > AUTO_TIMEOUT_S:
+            return self._auto_end("Captura abandonada: o rosto não ficou de frente o bastante", tr,
+                                  desistir=True)
+
+        yaw, pitch = self._angles(tr["face"])
+        lim = AUTO_OLHAR_GRAUS if specific else AUTO_FRENTE_GRAUS
+        looking = abs(yaw) <= lim and abs(pitch) <= lim
+        if specific and not looking:
+            cap["away"] = cap["away"] or now
+            if now - cap["away"] > AUTO_DESVIO_S:
+                return self._auto_end("Captura interrompida: a pessoa desviou o olhar", tr)
+        elif looking:
+            cap["away"] = None
+        if looking and tr["box"][2] >= ENROLL_MIN_W * w and now >= cap["next"]:
+            feat, crop = self._feature(frame, tr["face"])
+            cap["samples"].append(feat)
+            if cap["photo"] is None:
+                cap["photo"] = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes()
+            cap["next"] = now + 0.15
+            if len(cap["samples"]) >= AUTO_SAMPLES:
+                return self._auto_finish(tr, cap)
+        msg = MSG_OLHANDO if specific else "Capturando o rosto de quem passou na câmera…"
+        self._auto_set("capturando", msg, count=len(cap["samples"]), ident=tr["id"])
+
+    def _auto_finish(self, tr, cap):
+        samples, photo = cap["samples"], cap["photo"]
+        self.auto = None
+        tr["auto_feito"] = True
+        # Confere com a média das fotos: às vezes o rosto só não tinha sido reconhecido ainda
+        mean = np.mean(samples, axis=0)
+        mean /= (np.linalg.norm(mean) or 1.0)
+        known, _ = self.db.match(mean)
+        if known:
+            return self._auto_set("aguardando", "", aviso=f"Esse rosto já está cadastrado como {known}")
+        name = self.db.add("", samples, photo, auto=True)
+        tr["votes"].clear()                 # reconhece de novo já com o cadastro novo
+        if "sess" in tr:                    # e a aparição atual passa a ser dessa pessoa
+            tr["sess"]["votos"].clear()
+        tr["since"] = RECOG_EVERY
+        print(f"Captura automática: {name} salvo(a)")
+        self._auto_set("aguardando", "", aviso=f"Salvo como {name}. Edite o nome em “Pessoas cadastradas”.",
+                       saved=name)
+
     # ----- imagem para o painel -----
     def _publish(self, frame, visible, target):
         img = frame  # desenha por cima (o quadro não é mais usado)
         with self.lock:
             on_oled = {t["id"] for t in self.targets}   # rostos que viram emoji: borda grossa
+        auto = self.auto_info
         for tr in visible:
             x, y, fw, fh = (int(v) for v in tr["box"])
             known = bool(tr["name"])
@@ -931,6 +1137,23 @@ class Vision:
             cv2.rectangle(img, (x, y - th - 10), (x + tw + 10, y), color, -1)
             cv2.putText(img, label, (x + 5, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (15, 17, 21), 1,
                         cv2.LINE_AA)
+            if tr["id"] == auto.get("id"):  # captura automática: aviso e progresso embaixo do rosto
+                cap = auto["state"] == "capturando"
+                frac = auto["count"] / AUTO_SAMPLES if cap else auto["fix"]
+                if cap and self.auto_mode == "especifico":
+                    texto = ascii_text(MSG_OLHANDO)
+                elif cap:
+                    texto = f"Capturando {auto['count']}/{AUTO_SAMPLES}"
+                else:
+                    texto = "Olhando fixo..."
+                yb = y + fh + 6
+                cv2.rectangle(img, (x, yb), (x + fw, yb + 8), (40, 40, 40), -1)
+                cv2.rectangle(img, (x, yb), (x + int(fw * frac), yb + 8), (94, 197, 34), -1)
+                (tw, th), _ = cv2.getTextSize(texto, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+                tx = max(0, min(img.shape[1] - tw - 10, x + fw // 2 - tw // 2 - 5))
+                cv2.rectangle(img, (tx, yb + 12), (tx + tw + 10, yb + th + 22), (15, 17, 21), -1)
+                cv2.putText(img, texto, (tx + 5, yb + th + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                            (255, 255, 255), 1, cv2.LINE_AA)
             if tr is target:  # os 5 pontos usados para calcular a pose
                 f = tr["face"]
                 for i in range(5):
@@ -981,6 +1204,8 @@ class Vision:
                     "name": en["name"], "state": en["state"], "msg": en["msg"],
                     "count": len(en["samples"]), "total": ENROLL_SAMPLES,
                 },
+                "auto": dict(self.auto_info, on=self.auto_on, mode=self.auto_mode, total=AUTO_SAMPLES,
+                             fixS=AUTO_FIXAR_S),
                 "t": time.time(),
             }
 
@@ -1143,15 +1368,26 @@ def make_handler(board, vision, db, reg):
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if 0 < length <= 4096 else b""
 
-            if path == "/api/cadastrar":
-                try:
-                    name = " ".join(str(json.loads(raw or b"{}").get("nome", "")).split())
-                except (ValueError, AttributeError):
-                    return self._send(400, {"error": 'envie JSON {"nome": "..."}'})
+            try:
+                body = json.loads(raw or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError
+            except ValueError:
+                return self._send(400, {"error": "o corpo deve ser um objeto JSON"})
+
+            def nome_ok(key):
+                """Nome limpo do corpo, ou (None, resposta de erro)."""
+                name = " ".join(str(body.get(key, "")).split())
                 if not name:
-                    return self._send(400, {"error": "Digite o nome da pessoa"})
+                    return None, (400, {"error": "Digite o nome da pessoa"})
                 if len(name) > NAME_MAX:
-                    return self._send(400, {"error": f"Use no máximo {NAME_MAX} letras (é o que cabe no visor)"})
+                    return None, (400, {"error": f"Use no máximo {NAME_MAX} letras (é o que cabe no visor)"})
+                return name, None
+
+            if path == "/api/cadastrar":
+                name, err = nome_ok("nome")
+                if err:
+                    return self._send(*err)
                 if not vision.cam_ok:
                     return self._send(503, {"error": "A câmera não está funcionando"})
                 vision.start_enroll(name)
@@ -1160,6 +1396,25 @@ def make_handler(board, vision, db, reg):
             elif path == "/api/remover":
                 if not db.remove(q.get("nome", "")):
                     return self._send(404, {"error": "Pessoa não encontrada"})
+            elif path == "/api/renomear":
+                old = str(body.get("nome", ""))
+                new, err = nome_ok("novo")
+                if err:
+                    return self._send(*err)
+                try:
+                    db.rename(old, new, merge=bool(body.get("juntar")))
+                except KeyError:   # antes do LookupError (KeyError é um LookupError)
+                    return self._send(409, {"error": f"Já existe “{new}”. Clique de novo para juntar os dois.",
+                                            "existe": True})
+                except LookupError:
+                    return self._send(404, {"error": "Pessoa não encontrada"})
+                reg.renomear(old, new)          # as aparições antigas passam a ter o nome novo
+                vision.renames.append((old, new))
+            elif path == "/api/auto":
+                modo = q.get("modo", vision.auto_mode)
+                if modo not in ("qualquer", "especifico"):
+                    return self._send(400, {"error": "modo deve ser qualquer ou especifico"})
+                vision.set_auto(q.get("on", "1" if vision.auto_on else "0") == "1", modo)
             elif path == "/api/humor":
                 try:
                     m = int(q.get("id", "-1"))

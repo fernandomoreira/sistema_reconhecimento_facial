@@ -97,6 +97,20 @@ sem `@` são log. Faixas: x,y −100..100; yaw −60..60; pitch, roll −45..45;
   `pc/relatorios.html` em `/relatorios` (`/api/relatorio`, `/api/relatorio.csv` com `;` + BOM).
 - Título do painel: **Programa de Monitoramento Interativo**.
 
+## Captura automática e edição de nomes
+
+- Painel: card “Captura automática” (botão deslizante + modo `qualquer`/`especifico`), `/api/auto`.
+  Estado em `Vision.auto_on`, `auto_mode`, `auto` (captura em andamento, só a thread da câmera
+  mexe) e `auto_info` (o que vai em `/api/alvo` → `auto`). Lógica em `Vision._auto_step()`.
+- Só captura quem os últimos `AUTO_VOTOS` reconhecimentos deram desconhecido; cada track tenta
+  uma vez (`tr["auto_feito"]`). Específico: `tr["fix"]` = desde quando olha fixo (`AUTO_FIXAR_S`,
+  `AUTO_OLHAR_GRAUS`); desviar por mais de `AUTO_DESVIO_S` interrompe. Durante a captura o nome
+  no OLED vira `OLED_OLHANDO` e o vídeo mostra `MSG_OLHANDO`.
+- `FaceDB.add(..., auto=True)` escolhe "Desconhecido N" (`contadorDesconhecidos` em
+  `pessoas.json`, números não se repetem); a pessoa fica com `"auto": true` até ganhar nome.
+- `/api/renomear`: `FaceDB.rename()` (KeyError = nome já existe → 409; `juntar` mistura),
+  `Registro.renomear()` (aparições) e `Vision.renames` (votos dos rostos na câmera).
+
 ## Dados pessoais
 
 `pc/rostos/` (fotos e vetores dos rostos) e `pc/dados/` (aparições) ficam **só no PC** e estão

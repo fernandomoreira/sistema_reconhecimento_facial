@@ -144,6 +144,13 @@ class Registro:
                 (nome, tr["last"], tr["last"] - inicio, ativo, sess["conf"].get(nome, 0.0), sess["id"]))
         sess["salvo"] = time.time()
 
+    def renomear(self, antigo, novo):
+        """A pessoa mudou de nome no cadastro: as aparições dela acompanham."""
+        if not antigo or antigo == novo:
+            return
+        with self.lock, self.db:
+            self.db.execute("UPDATE aparicoes SET pessoa = ? WHERE pessoa = ?", (novo, antigo))
+
     @staticmethod
     def _foto(frame, box):
         import cv2
