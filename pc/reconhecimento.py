@@ -32,6 +32,7 @@ Rotas da API local:
     POST /api/auto?on=0|1&modo=qualquer|especifico
                                       captura automática de desconhecidos (salvos como
                                       "Desconhecido N"); especifico = só quem olhar fixo
+    POST /api/som?on=0|1              liga/desliga os beeps do buzzer da placa
     POST /api/humor?id=-1..5          -1 = automático; 0..5 = expressão fixa
     POST /api/calibrar                "de frente para a câmera" = cabeça reta
     POST /api/espelhar?on=0|1         espelha a imagem (o emoji imita como espelho)
@@ -137,6 +138,10 @@ AUTO_TIMEOUT_S = 15     # captura que não termina nesse tempo é abandonada
 AUTO_PREFIXO = "Desconhecido"
 MSG_OLHANDO = "Permaneça olhando para finalizar a captura"
 OLED_OLHANDO = "Permaneça olhando"  # o mesmo aviso no visor (cabe em NAME_MAX)
+# Buzzer da placa (GPIO 23): comando BEEP 1..3
+BEEP_PESSOA, BEEP_TIQUE, BEEP_FIM = 1, 2, 3
+BEEP_PESSOA_S = 1.5     # no máximo 1 beep de "pessoa apareceu" a cada N s
+BEEP_TIQUE_S = 0.35     # intervalo dos beeps de continuidade da captura automática
 NAME_MAX = 20           # cabe numa linha do OLED
 FACE_MAX = 8            # emojis que cabem no OLED (= FACE_MAX de src/face.h)
 BOOT_ID = f"{time.time():.3f}"  # identifica esta execução do programa
@@ -666,6 +671,10 @@ class Vision:
         self.auto = None             # captura em andamento: {"id": track, "samples": [...], ...}
         self.auto_info = {"state": "parado", "msg": "", "count": 0, "fix": 0.0, "last": "", "seq": 0}
         self.renames = deque()       # (antigo, novo) para atualizar os rostos na câmera
+        self.sound = True            # beeps no buzzer da placa
+        self.beeps = deque(maxlen=8) # sons pedidos; o sender() manda para a placa
+        self.beep_pessoa = 0.0       # último beep de "pessoa apareceu"
+        self.beep_tique = 0.0        # último tique da captura automática
         threading.Thread(target=self._run, daemon=True).start()
 
     # ----- câmera -----
@@ -832,6 +841,9 @@ class Vision:
                                 "votes": deque(maxlen=5), "name": "", "score": 0.0, "since": RECOG_EVERY,
                                 "pose": None, "surprise": now + SURPRISE_S if surprise else 0.0})
                 self.next_id += 1
+                if now - self.beep_pessoa >= BEEP_PESSOA_S:   # alguém apareceu: beep curto
+                    self.beep_pessoa = now
+                    self.beep(BEEP_PESSOA)
         # Os que sumiram há pouco continuam guardados (o detector às vezes pisca)
         self.tracks = visible + [t for t in free if now - t["last"] < TRACK_KEEP_S]
         # Sumiu de vez: fecha a aparição no banco
@@ -993,6 +1005,10 @@ class Vision:
             en.update(state="ok", msg=f"{en['name']} cadastrado(a)!")
             print(f"Pessoa cadastrada: {en['name']}")
 
+    def beep(self, tipo):
+        if self.sound:
+            self.beeps.append(tipo)
+
     # ----- captura automática -----
     def set_auto(self, on, mode):
         # Só muda as opções: quem para/reinicia a captura é a thread da câmera
@@ -1097,6 +1113,9 @@ class Vision:
             cap["next"] = now + 0.15
             if len(cap["samples"]) >= AUTO_SAMPLES:
                 return self._auto_finish(tr, cap)
+        if now - self.beep_tique >= BEEP_TIQUE_S:   # beeps de continuidade enquanto captura
+            self.beep_tique = now
+            self.beep(BEEP_TIQUE)
         msg = MSG_OLHANDO if specific else "Capturando o rosto de quem passou na câmera…"
         self._auto_set("capturando", msg, count=len(cap["samples"]), ident=tr["id"])
 
@@ -1116,6 +1135,7 @@ class Vision:
             tr["sess"]["votos"].clear()
         tr["since"] = RECOG_EVERY
         print(f"Captura automática: {name} salvo(a)")
+        self.beep(BEEP_FIM)
         self._auto_set("aguardando", "", aviso=f"Salvo como {name}. Edite o nome em “Pessoas cadastradas”.",
                        saved=name)
 
@@ -1221,6 +1241,7 @@ class Vision:
             "fps": round(self.fps, 1),
             "frameSize": list(self.frame_size),
             "mirror": self.mirror,
+            "sound": self.sound,
             "moodOverride": self.mood_override,
             "moods": MOODS,
             "faceMax": FACE_MAX,
@@ -1241,7 +1262,10 @@ def sender(board, vision):
     while True:
         time.sleep(1 / SEND_HZ)
         if not board.answering():
+            vision.beeps.clear()   # som atrasado não faz sentido
             continue
+        while vision.beeps:
+            board.send(f"BEEP {vision.beeps.popleft()}")
         now = time.time()
         tgts = vision.get_targets()
 
@@ -1426,6 +1450,10 @@ def make_handler(board, vision, db, reg):
             elif path == "/api/calibrar":
                 if not vision.calibrate():
                     return self._send(409, {"error": "Nenhum rosto na câmera para calibrar"})
+            elif path == "/api/som":
+                vision.sound = q.get("on", "1") == "1"
+                if not vision.sound:
+                    vision.beeps.clear()
             elif path == "/api/espelhar":
                 vision.mirror = q.get("on", "1") == "1"
             elif path == "/api/camera":

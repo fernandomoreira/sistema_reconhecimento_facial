@@ -120,6 +120,7 @@ viram emoji **as mais perto da câmera**, mostradas da esquerda para a direita.
 | ESP32 DevKit (ESP32-WROOM-32) | 1 |
 | Display OLED SSD1306 128x64 I2C (endereço 0x3C) | 1 |
 | LEDs 5 mm (amarelo, verde, vermelho) + resistores 220 Ω | 3 |
+| Buzzer 3,3 V (no GPIO 23) | 1 |
 | Webcam (a do notebook serve; aceita várias) | 1+ |
 
 | OLED | ESP32 | | LED | GPIO | Acende quando |
@@ -127,10 +128,12 @@ viram emoji **as mais perto da câmera**, mostradas da esquerda para a direita.
 | VCC | 3V3 | | 🟡 Amarelo | GPIO 5 | encontrou alguém na câmera |
 | GND | GND | | 🟢 Verde | GPIO 4 | a pessoa está **cadastrada** |
 | SDA | GPIO 21 | | 🔴 Vermelho | GPIO 15 | a pessoa **não foi reconhecida** |
-| SCL | GPIO 22 | | | | |
+| SCL | GPIO 22 | | 🔊 Buzzer | GPIO 23 | beep curto quando alguém aparece; beeps curtinhos durante a captura automática e 3 notas quando ela termina |
 
 Cada LED: `GPIO ──[220 Ω]──►|── GND`. GPIO 5 e 15 são *strapping pins*, mas com o LED ligado
-para o GND o boot não é afetado.
+para o GND o boot não é afetado. Buzzer: `GPIO 23 ── (+) buzzer (−) ── GND`. O firmware usa
+tom (buzzer **passivo**); se o seu for **ativo** e o som sair rouco, mude `BUZZER_ATIVO` para
+`true` em `src/buzzer.cpp`.
 
 ## 🚀 Instalação
 
@@ -179,7 +182,7 @@ painel em **http://localhost:8000**.
 |---|---|
 | **📷 Câmera e emoji** | vídeo ao vivo com os rostos marcados (verde = conhecido, laranja = desconhecido; borda grossa = virou emoji), **prévia do OLED** e barras com a pose da pessoa mais perto |
 | **🙂 Emojis no visor** | de **1** (só a pessoa mais perto) até **8** (todos que cabem): um emoji para cada pessoa na câmera |
-| **🎯 Calibrar / 🪞 Espelhar** | define a "cabeça reta" / imagem espelhada (o emoji imita como espelho) |
+| **🎯 Calibrar / 🪞 Espelhar / 🔊 Som** | define a "cabeça reta" / imagem espelhada (o emoji imita como espelho) / liga e desliga os beeps |
 | **🔍 Buscar câmeras** | procura as câmeras ligadas ao PC, com o nome do Windows; avisa se uma está **ocupada** ou com **imagem preta** |
 | **➕ Cadastrar pessoa** | 15 fotos em ~3 s; cadastrar o mesmo nome de novo **junta** amostras (óculos, outra luz...) |
 | **🤖 Captura automática** | botão deslizante **Sim/Não**. Com Sim, escolha: **Capturar qualquer pessoa** (quem passar na frente da câmera) ou **Captura específica** (só quem olhar fixamente para a câmera por 2 s; a câmera e o visor mostram “Permaneça olhando para finalizar a captura”). Só rostos não reconhecidos são capturados (15 fotos) e salvos como **Desconhecido 1, 2, 3…** |
@@ -217,12 +220,14 @@ sem `@` são log.
 | `IDLE` | ninguém na câmera (sem resposta) |
 | `NAMES <nome1>\|<nome2>\|...` | nomes na ordem do `M` (CP437, até 20 cada; vazio = desconhecida) |
 | `NAME <texto>` | nome só da 1ª pessoa (`NAME` sozinho apaga) |
+| `BEEP <tipo>` | som no buzzer, **sem resposta**: 1 = pessoa apareceu, 2 = tique da captura automática, 3 = captura terminada |
+| `TONE <freq> <ms>` | tom avulso para testar o buzzer (100..10000 Hz, até 3000 ms; sem resposta) |
 
 <details>
 <summary><b>Exemplo de respostas e teste pelo Monitor Serial</b></summary>
 
 ```
-@{"fw":"rosto-esp32","ver":2,"uptime":97,"oled":true,"state":"seguindo","count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","","","","","","",""],"fps":30,"looks":590,"leds":[1,1,1]}
+@{"fw":"rosto-esp32","ver":3,"uptime":97,"oled":true,"state":"seguindo","count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","","","","","","",""],"fps":30,"looks":590,"leds":[1,1,1]}
 @{"error":"comando desconhecido"}
 ```
 
@@ -248,6 +253,7 @@ Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Trist
 | POST | `/api/cadastrar` (corpo `{"nome": "..."}`) · `/api/cancelar` | cadastro |
 | POST | `/api/remover?nome=...` | apaga uma pessoa |
 | POST | `/api/renomear` (corpo `{"nome": "...", "novo": "...", "juntar": false}`) | troca o nome (409 se já existe e `juntar` é falso) |
+| POST | `/api/som?on=0\|1` | beeps do buzzer da placa |
 | POST | `/api/auto?on=0\|1&modo=qualquer\|especifico` | captura automática de desconhecidos |
 | POST | `/api/humor?id=-1..5` | −1 = automático |
 | POST | `/api/calibrar` | posição atual = cabeça reta |

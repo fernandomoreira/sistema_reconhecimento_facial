@@ -5,12 +5,14 @@
 // o rosto e manda pela USB para onde a pessoa está e para onde ela olha.
 // O ESP32 desenha no OLED um emoji que imita esses movimentos:
 //   leds     -> indicam se tem alguém e se a pessoa é conhecida
+//   buzzer   -> beeps (GPIO 23) pedidos pelo PC
 //   display  -> liga o OLED
 //   face     -> anima e desenha o emoji
 //   pc_link  -> recebe os comandos do PC pela serial
 // ===========================================================================
 #include <Arduino.h>
 
+#include "buzzer.h"
 #include "display.h"
 #include "face.h"
 #include "leds.h"
@@ -27,6 +29,7 @@ void setup() {
 
   // LEDs primeiro: garante que todos ficam apagados o quanto antes
   ledsBegin();
+  buzzerBegin();
 
   displayBegin();
   faceBegin();  // começa dormindo até aparecer alguém na câmera
@@ -35,5 +38,6 @@ void setup() {
 void loop() {
   pcLinkLoop();
   faceLoop();
+  buzzerLoop();
   delay(1);  // pequena pausa: deixa o processador "respirar"
 }

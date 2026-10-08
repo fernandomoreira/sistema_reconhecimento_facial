@@ -3,11 +3,12 @@
 // ===========================================================================
 #include "pc_link.h"
 
+#include "buzzer.h"
 #include "display.h"
 #include "face.h"
 #include "leds.h"
 
-static const uint8_t FW_VERSION = 2;
+static const uint8_t FW_VERSION = 3;
 // M com 8 pessoas: "M 8" + 8 x 8 números (~300 letras); NAMES: 8 nomes de 20
 static const size_t  MAX_LINE   = 400;
 
@@ -86,6 +87,17 @@ static void runCommand(char* cmd) {
     }
     faceLook(v[0], v[1], v[2], v[3], v[4], v[5], v[6] < 0 ? 0 : (uint8_t)v[6]);
     looks++;
+  } else if (strncmp(cmd, "BEEP ", 5) == 0) {
+    long t;
+    if (!readInt(args, t) || t < 1 || t > BEEP_MAX) { sendError("use BEEP 1..3"); return; }
+    buzzerPlay((uint8_t)t);
+  } else if (strncmp(cmd, "TONE ", 5) == 0) {
+    long f, ms;
+    if (!readInt(args, f) || !readInt(args, ms) || f < 100 || f > 10000 || ms < 1 || ms > 3000) {
+      sendError("use TONE freq(100..10000) ms(1..3000)");
+      return;
+    }
+    buzzerTone((uint16_t)f, (uint16_t)ms);
   } else if (strcmp(cmd, "IDLE") == 0) {
     faceIdle();
   } else if (strcmp(cmd, "NAMES") == 0 || strncmp(cmd, "NAMES ", 6) == 0) {

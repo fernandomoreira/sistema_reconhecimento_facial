@@ -13,9 +13,13 @@
 //   NAMES <nome1>|<nome2>|...               -> nomes das pessoas, na ordem do M
 //                                              (bytes CP437, até 20 cada; vazio = desconhecida)
 //   NAME <texto>                            -> nome só da 1ª pessoa
+//   BEEP <tipo>                             -> toca um som no buzzer (sem resposta):
+//                                              1 = pessoa apareceu, 2 = tique da captura
+//                                              automática, 3 = captura terminada
+//   TONE <freq> <ms>                        -> tom avulso (100..10000 Hz, até 3000 ms), para teste
 //
 // Respostas começam com '@' seguido de JSON:
-//   @{"fw":"rosto-esp32","ver":2,"uptime":12,"oled":true,"state":"seguindo",
+//   @{"fw":"rosto-esp32","ver":3,"uptime":12,"oled":true,"state":"seguindo",
 //     "count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","",...],
 //     "fps":29,"looks":350,"leds":[1,1,1]}
 //   (state = seguindo | procurando | dormindo; count = emojis na tela;
