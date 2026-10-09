@@ -204,7 +204,7 @@ painel em **http://localhost:8000**.
 | **🎭 Expressão** | **Automático** ou uma expressão fixa (Neutro, Feliz, Curioso, Surpreso, Bravo, Triste) |
 | **💡 LEDs** | embaixo da câmera: os 3 LEDs da placa, acesos em tempo real |
 | **🕒 Últimas aparições** | as 5 aparições mais recentes: foto, pessoa, entrada, saída e tempo na câmera (conta ao vivo para quem ainda está lá) |
-| **📊 Relatórios** (`/relatorios`) | filtros por período (hoje, ontem, 7/30 dias, mês, tudo ou datas) e pessoa; resumo, tabelas por pessoa e por dia, gráfico por hora, lista completa paginada, **Exportar para Excel (CSV)** e **Imprimir / PDF** |
+| **📊 Relatórios** (`/relatorios`) | filtros por período (hoje, ontem, 7/30 dias, mês, tudo ou datas) e pessoa; resumo, tabelas por pessoa e por dia, gráfico por hora, lista completa paginada, **Exportar para Excel (CSV)** e **Imprimir / PDF**; **💾 Consumo do sistema** (arquivos, imagens, espaço usado por rostos, banco e modelos, banco de dados e disco livre) e **🧹 Liberar espaço** (apaga aparições antigas mantendo o último dia, mês, ano ou a partir de uma data; ou só as fotos delas) |
 | **Placa · Câmera · Portas · Log** | estado da conexão, quadros por segundo, portas seriais e mensagens da placa |
 
 ### O que o emoji faz sozinho
@@ -280,6 +280,8 @@ Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Trist
 | GET | `/api/aparicoes/foto/<id>` | foto pequena do rosto daquela aparição |
 | GET | `/api/relatorio?de=AAAA-MM-DD&ate=AAAA-MM-DD&pessoa=&pagina=` | totais por pessoa/dia/hora + lista (pessoa: nome, `__conhecidos` ou `__desconhecidos`) |
 | GET | `/api/relatorio.csv?...` | todas as aparições do filtro em CSV (`;`, abre direto no Excel) |
+| GET | `/api/consumo` | arquivos, imagens e bytes de `pc/rostos`, `pc/dados` e `pc/modelos`, banco de dados e disco |
+| POST | `/api/limpar` (corpo `{"dias": 30}` ou `{"antes": "AAAA-MM-DD"}`, `"soFotos"`, `"previa"`) | apaga aparições antigas (ou só as fotos) e compacta o banco; `previa: true` só conta |
 | POST | `/api/port?name=COM12\|auto` · `/api/release` · `/api/resume` | porta serial |
 
 </details>

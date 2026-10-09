@@ -100,6 +100,12 @@ ou `{"error":"..."}`); linhas sem `@` são log. Faixas: x,y −100..100; yaw −
   aparição zera os votos dela. Cadastrado que volta em ≤ `JUNTAR_S` continua a mesma aparição.
 - Painel: quadro "Últimas aparições" (`/api/aparicoes?n=5`, a cada 2 s). Página
   `pc/relatorios.html` em `/relatorios` (`/api/relatorio`, `/api/relatorio.csv` com `;` + BOM).
+- Relatórios também têm **Consumo do sistema** (`/api/consumo`: `consumo()`/`pasta_info()` no
+  reconhecimento.py + `Registro.consumo()`) e **Liberar espaço** (`/api/limpar` →
+  `Registro.limpar(antes, so_fotos, previa)`: nunca apaga `ativo = 1`; depois `VACUUM` +
+  `wal_checkpoint(TRUNCATE)`). O painel mostra a prévia antes e pede 2 cliques para apagar.
+- O `-wal` do SQLite crescia (4 MB para um banco de 0,4 MB): `PRAGMA journal_size_limit` = 1 MB.
+  Teste limpeza sempre numa **cópia** do banco (`pc/dados/monitoramento.db*`), nunca no real.
 - Título do painel: **Programa de Monitoramento Interativo**.
 
 ## Captura automática e edição de nomes

@@ -9,6 +9,8 @@
   Servido por pc/reconhecimento.py em /relatorios. Consulta:
     GET /api/relatorio?de=AAAA-MM-DD&ate=AAAA-MM-DD&pessoa=...&pagina=N
     GET /api/relatorio.csv?...   (download para o Excel)
+    GET /api/consumo             (arquivos, imagens e espaço usado)
+    POST /api/limpar             (apaga aparições antigas; {"previa": true} só conta)
 -->
 <style>
   :root{
@@ -63,6 +65,15 @@
   .hours div[data-n="0"]{background:#262a33}
   .hlabels{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;font-size:10px;color:var(--muted);text-align:center;margin-top:4px}
 
+  .disk{height:10px;border-radius:99px;background:#11141a;border:1px solid var(--line);overflow:hidden}
+  .disk i{display:block;height:100%;background:var(--accent)}
+  .check{flex-direction:row !important;align-items:center;gap:8px !important;font-size:13px !important;color:var(--txt) !important;padding-bottom:9px}
+  .check input{accent-color:var(--bad);width:16px;height:16px}
+  .btn.danger{color:#fca5a5}
+  .btn.danger.confirm{background:var(--bad);border-color:var(--bad);color:#fff}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .msg{margin:12px 0 6px;font-size:14px}
+  .msg.ok{color:var(--ok)}
   .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:13px;color:var(--muted)}
   .meta{color:var(--muted);font-size:12px;margin:0}
   #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--bad);
@@ -168,6 +179,44 @@
       <span id="pagInfo">—</span>
       <button class="btn" id="next">Próximas →</button>
     </div>
+  </section>
+
+  <!-- Consumo do sistema -->
+  <section class="card wide">
+    <h2>💾 Consumo do sistema <small id="consInfo">—</small></h2>
+    <div class="kpis" id="consKpis"></div>
+    <div class="tbl" style="margin-top:12px"><table>
+      <thead><tr><th>O quê</th><th>Pasta</th><th class="n">Arquivos</th><th class="n">Imagens</th>
+        <th class="n">Tamanho</th><th>Detalhes</th></tr></thead>
+      <tbody id="consumo"></tbody>
+    </table></div>
+    <div style="margin-top:12px">
+      <div class="disk"><i id="diskBar"></i></div>
+      <p class="meta" id="diskInfo" style="margin-top:6px">—</p>
+    </div>
+  </section>
+
+  <!-- Liberar espaço -->
+  <section class="card wide no-print">
+    <h2>🧹 Liberar espaço</h2>
+    <div class="filters">
+      <label>Apagar aparições antigas, mantendo
+        <select id="limPer">
+          <option value="1">só o último dia</option>
+          <option value="30" selected>só o último mês</option>
+          <option value="365">só o último ano</option>
+          <option value="custom">personalizado…</option>
+        </select>
+      </label>
+      <label id="limDataL" style="display:none">Apagar o que começou antes de <input type="date" id="limData"></label>
+      <label class="check"><input type="checkbox" id="limFotos"> Apagar só as fotos (os registros continuam nos relatórios)</label>
+      <div class="actions">
+        <button class="btn danger" id="limBtn" disabled>🧹 Apagar</button>
+      </div>
+    </div>
+    <p class="msg" id="limPrev">—</p>
+    <p class="meta">Quem está na câmera agora nunca é apagado. As pessoas cadastradas (rostos) não
+      são afetadas. Depois de apagar, o banco é compactado para o espaço voltar para o disco.</p>
   </section>
 </main>
 <div id="toast"></div>
@@ -287,8 +336,97 @@ $("prev").onclick = () => gerar(R.pagina - 1);
 $("next").onclick = () => gerar(R.pagina + 1);
 $("imprimir").onclick = () => window.print();
 
+// ===========================================================================
+// Consumo do sistema e limpeza
+// ===========================================================================
+const fmtBytes = b => b < 1024 ? `${b} B` : b < 1048576 ? `${(b/1024).toFixed(1)} KB`
+  : b < 1073741824 ? `${(b/1048576).toFixed(1)} MB` : `${(b/1073741824).toFixed(2)} GB`;
+const num = n => Number(n).toLocaleString("pt-BR");
+const dia = t => t ? dt(t).toLocaleDateString("pt-BR") : "—";
+
+function renderConsumo(c){
+  const r = c.rostos, b = c.banco, m = c.modelos;
+  $("consInfo").textContent = "atualizado em " + dt(c.agora).toLocaleString("pt-BR");
+  $("consKpis").innerHTML = [
+    ["Arquivos do sistema", num(c.total.arquivos)],
+    ["Imagens", num(r.imagens + b.fotos)],
+    ["Espaço usado no disco", fmtBytes(c.total.bytes)],
+    ["Banco de dados", fmtBytes(b.bytes)],
+    ["Aparições gravadas", num(b.registros)],
+    ["Pessoas cadastradas", num(r.pessoas)],
+  ].map(([l, v]) => `<div class="kpi"><small>${l}</small><b>${v}</b></div>`).join("");
+  $("consumo").innerHTML = [
+    ["👥 Rostos cadastrados", r.pasta, r.arquivos, r.imagens, r.bytes,
+     `${num(r.pessoas)} pessoa(s), ${num(r.amostras)} amostras de reconhecimento`],
+    ["🕒 Banco de aparições", b.pasta, b.arquivosPasta, b.fotos, b.bytes,
+     `${num(b.registros)} aparições (${dia(b.primeira)} a ${dia(b.ultima)}); fotos dentro do banco: ${fmtBytes(b.bytesFotos)}`],
+    ["🧠 Modelos de IA", m.pasta, m.arquivos, m.imagens, m.bytes, "YuNet + SFace (não mudam)"],
+  ].map(([o, p, a, i, t, d]) => `<tr><td><b>${o}</b></td><td><code>${esc(p)}</code></td><td class="n">${num(a)}</td>
+      <td class="n">${num(i)}</td><td class="n">${fmtBytes(t)}</td><td style="color:var(--muted)">${esc(d)}</td></tr>`).join("");
+  const usado = c.disco.total - c.disco.livre;
+  $("diskBar").style.width = (usado / c.disco.total * 100) + "%";
+  $("diskInfo").textContent = `Disco: ${fmtBytes(c.disco.livre)} livres de ${fmtBytes(c.disco.total)} ` +
+    `(${Math.round(usado / c.disco.total * 100)}% usado) · o sistema ocupa ${(c.total.bytes / c.disco.total * 100).toFixed(3)}% do disco`;
+}
+async function carregarConsumo(){
+  try { renderConsumo(await fetch("/api/consumo", {cache:"no-store"}).then(r => r.json())); }
+  catch(e){ toast("Falha ao ler o consumo: " + e.message); }
+}
+
+// O que apagar: últimos N dias ou antes de uma data
+function limCorpo(){
+  const v = $("limPer").value, corpo = {soFotos: $("limFotos").checked};
+  if (v === "custom") { if (!$("limData").value) return null; corpo.antes = $("limData").value; }
+  else corpo.dias = +v;
+  return corpo;
+}
+async function limPrevia(){
+  const btn = $("limBtn"), corpo = limCorpo();
+  btn.classList.remove("confirm"); btn.textContent = "🧹 Apagar";
+  $("limDataL").style.display = $("limPer").value === "custom" ? "" : "none";
+  if (!corpo) { btn.disabled = true; $("limPrev").className = "msg"; $("limPrev").textContent = "Escolha a data."; return; }
+  try {
+    const r = await fetch("/api/limpar", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(Object.assign({previa: true}, corpo))});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    const ate = dt(d.antes).toLocaleString("pt-BR");
+    btn.disabled = !d.registros;
+    $("limPrev").className = "msg";
+    $("limPrev").innerHTML = !d.registros
+      ? `Nada para apagar: nenhuma aparição${corpo.soFotos ? " com foto" : ""} antes de ${ate}.`
+      : corpo.soFotos
+        ? `Serão apagadas as fotos de <b>${num(d.registros)}</b> aparição(ões) anteriores a ${ate} (cerca de <b>${fmtBytes(d.bytesFotos)}</b>).`
+        : `Serão apagadas <b>${num(d.registros)}</b> aparição(ões) anteriores a ${ate}, com <b>${fmtBytes(d.bytesFotos)}</b> de fotos.`;
+  } catch(e){ btn.disabled = true; $("limPrev").textContent = "Falha: " + e.message; }
+}
+$("limBtn").onclick = async () => {
+  const btn = $("limBtn");
+  if (!btn.classList.contains("confirm")) {        // 1º clique pede confirmação
+    btn.classList.add("confirm"); btn.textContent = "Confirmar? Não dá para desfazer";
+    clearTimeout(btn.t); btn.t = setTimeout(() => { btn.classList.remove("confirm"); btn.textContent = "🧹 Apagar"; }, 4000);
+    return;
+  }
+  clearTimeout(btn.t); btn.disabled = true; btn.textContent = "Apagando…";
+  try {
+    const r = await fetch("/api/limpar", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(limCorpo())});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    renderConsumo(d.consumo);
+    await limPrevia();
+    $("limPrev").className = "msg ok";
+    $("limPrev").textContent = `✅ ${num(d.registros)} aparição(ões) ${$("limFotos").checked ? "ficaram sem foto" : "apagada(s)"}` +
+      ` · ${fmtBytes(d.liberado || 0)} liberados no disco.`;
+    gerar(1);
+  } catch(e){ toast("Falha ao apagar: " + e.message); limPrevia(); }
+};
+["limPer", "limData", "limFotos"].forEach(id => $(id).onchange = limPrevia);
+
 aplicarPeriodo();
 gerar(1);
+carregarConsumo();
+limPrevia();
 </script>
 </body>
 </html>

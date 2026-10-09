@@ -44,6 +44,9 @@ Rotas da API local:
     GET  /api/aparicoes/foto/<id>     foto pequena do rosto daquela aparição
     GET  /api/relatorio?de=&ate=&pessoa=&pagina=   totais por pessoa/dia/hora + lista
     GET  /api/relatorio.csv?de=&ate=&pessoa=       todas as aparições do filtro em CSV
+    GET  /api/consumo                 arquivos, imagens e espaço usado (rostos, banco, modelos, disco)
+    POST /api/limpar {"dias": 30 | "antes": "AAAA-MM-DD", "soFotos": false, "previa": true}
+                                      apaga aparições antigas (ou só as fotos delas) e compacta o banco
                                       (pessoa: nome, __conhecidos ou __desconhecidos)
     POST /api/port?name=COM12|auto    escolhe a porta serial
     POST /api/release | /api/resume   solta / retoma a porta COM (para gravar firmware)
@@ -54,6 +57,7 @@ import atexit
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import unicodedata
@@ -1303,6 +1307,36 @@ def sender(board, vision):
 # ===========================================================================
 # Servidor HTTP do painel
 # ===========================================================================
+def pasta_info(pasta, exts=(".jpg", ".jpeg", ".png")):
+    """Arquivos, imagens e bytes de uma pasta (com subpastas)."""
+    arquivos = imagens = tam = 0
+    if pasta.exists():
+        for p in pasta.rglob("*"):
+            if p.is_file():
+                arquivos += 1
+                imagens += p.suffix.lower() in exts
+                tam += p.stat().st_size
+    return {"pasta": str(pasta.relative_to(ROOT.parent)).replace(os.sep, "/"),
+            "arquivos": arquivos, "imagens": imagens, "bytes": tam}
+
+
+def consumo(db, reg):
+    rostos = pasta_info(FACES_DIR)
+    dados = pasta_info(REG_FILE.parent)
+    modelos = pasta_info(MODELS_DIR)
+    pessoas = db.list()
+    disco = shutil.disk_usage(ROOT)
+    return {
+        "rostos": dict(rostos, pessoas=len(pessoas), amostras=sum(p["amostras"] for p in pessoas)),
+        "banco": dict(reg.consumo(), pasta=dados["pasta"], arquivosPasta=dados["arquivos"]),
+        "modelos": modelos,
+        "total": {"arquivos": rostos["arquivos"] + dados["arquivos"] + modelos["arquivos"],
+                  "bytes": rostos["bytes"] + dados["bytes"] + modelos["bytes"]},
+        "disco": {"total": disco.total, "livre": disco.free},
+        "agora": time.time(),
+    }
+
+
 def make_handler(board, vision, db, reg):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -1368,6 +1402,8 @@ def make_handler(board, vision, db, reg):
                     self._send(200, foto, "image/jpeg", cache=True)  # a foto nunca muda
                 else:
                     self._send(404, {"error": "foto não encontrada"})
+            elif path == "/api/consumo":
+                self._send(200, consumo(db, reg))
             elif path in ("/api/relatorio", "/api/relatorio.csv"):
                 try:
                     de, ate, pessoa = self._filtro(q)
@@ -1430,6 +1466,19 @@ def make_handler(board, vision, db, reg):
             elif path == "/api/remover":
                 if not db.remove(q.get("nome", "")):
                     return self._send(404, {"error": "Pessoa não encontrada"})
+            elif path == "/api/limpar":
+                try:
+                    if body.get("antes"):
+                        antes = datetime.strptime(str(body["antes"]), "%Y-%m-%d").timestamp()
+                    else:
+                        dias = float(body.get("dias", 0))
+                        if dias < 1:
+                            raise ValueError
+                        antes = time.time() - dias * 86400
+                except (TypeError, ValueError):
+                    return self._send(400, {"error": 'envie {"dias": N} (N ≥ 1) ou {"antes": "AAAA-MM-DD"}'})
+                res = reg.limpar(antes, so_fotos=bool(body.get("soFotos")), previa=bool(body.get("previa")))
+                return self._send(200, dict(res, antes=antes, consumo=consumo(db, reg)))
             elif path == "/api/renomear":
                 old = str(body.get("nome", ""))
                 new, err = nome_ok("novo")

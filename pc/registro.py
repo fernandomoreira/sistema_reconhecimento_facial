@@ -39,11 +39,14 @@ class Registro:
     def __init__(self, arquivo):
         arquivo = Path(arquivo)
         arquivo.parent.mkdir(parents=True, exist_ok=True)
+        self.arquivo = arquivo
         self.lock = threading.Lock()
         self.db = sqlite3.connect(str(arquivo), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         with self.lock, self.db:
             self.db.execute("PRAGMA journal_mode=WAL")
+            # O arquivo -wal cresce e não encolhe sozinho: limita a ~1 MB depois de cada checkpoint
+            self.db.execute("PRAGMA journal_size_limit=1048576")
             self.db.execute("""
                 CREATE TABLE IF NOT EXISTS aparicoes (
                     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -275,6 +278,49 @@ class Registro:
                          "sim" if r["ativo"] else "não", r["camera"],
                          f"{r['confianca'] * 100:.0f}" if r["pessoa"] else ""])
         return ("﻿" + out.getvalue()).encode("utf-8")
+
+
+    # ------------------------------------------------------------------
+    # Consumo e limpeza (página de relatórios)
+    # ------------------------------------------------------------------
+    def tamanho_arquivo(self):
+        """Bytes do banco no disco (o .db mais os arquivos -wal e -shm do SQLite)."""
+        return sum(p.stat().st_size for p in (self.arquivo, Path(f"{self.arquivo}-wal"),
+                                               Path(f"{self.arquivo}-shm")) if p.exists())
+
+    def consumo(self):
+        with self.lock:
+            r = self.db.execute(
+                "SELECT COUNT(*) AS n, COUNT(foto) AS fotos, COALESCE(SUM(LENGTH(foto)), 0) AS bytes_fotos, "
+                "MIN(inicio) AS primeira, MAX(inicio) AS ultima FROM aparicoes").fetchone()
+        return {"arquivo": str(self.arquivo.name), "bytes": self.tamanho_arquivo(),
+                "registros": r["n"], "fotos": r["fotos"], "bytesFotos": r["bytes_fotos"],
+                "primeira": r["primeira"], "ultima": r["ultima"]}
+
+    def limpar(self, antes, so_fotos=False, previa=False):
+        """Apaga as aparições que começaram antes de `antes` (epoch). Quem está na
+        câmera agora nunca é apagado. so_fotos: mantém os registros e tira só as fotos.
+        previa: só conta. Depois de apagar, compacta o arquivo (VACUUM) para o espaço
+        voltar para o disco."""
+        where = "inicio < ? AND ativo = 0" + (" AND foto IS NOT NULL" if so_fotos else "")
+        with self.lock:
+            r = self.db.execute(f"SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(foto)), 0) AS b "
+                                f"FROM aparicoes WHERE {where}", (antes,)).fetchone()
+            res = {"registros": r["n"], "bytesFotos": r["b"]}
+            if previa or not r["n"]:
+                return res
+            antes_bytes = self.tamanho_arquivo()
+            with self.db:
+                if so_fotos:
+                    self.db.execute(f"UPDATE aparicoes SET foto = NULL WHERE {where}", (antes,))
+                else:
+                    self.db.execute(f"DELETE FROM aparicoes WHERE {where}", (antes,))
+            self.db.execute("VACUUM")
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            res["liberado"] = max(0, antes_bytes - self.tamanho_arquivo())
+        print(f"Registro: {res['registros']} aparição(ões) {'sem foto agora' if so_fotos else 'apagada(s)'}, "
+              f"{res['liberado'] / 1024:.0f} KB liberados")
+        return res
 
 
 def fmt_dur(s):
