@@ -770,10 +770,31 @@ $("calBtn").onclick = async () => { if (await post("/api/calibrar", "Falha ao ca
 // Som: o mesmo botão passa por mudo → baixo → médio → alto
 const VOL_TXT = ["🔇 Mudo", "🔈 Baixo", "🔉 Médio", "🔊 Alto"];
 const volIdx = v => { const l = v.volumes; let i = l.indexOf(v.volume); if (i < 0) i = l.findIndex(x => x >= v.volume); return i < 0 ? l.length - 1 : i; };
-$("somBtn").onclick = async () => {
+// O nível escolhido fica aqui: cliques seguidos partem dele (não do último status, que pode
+// ter saído antes do clique), e o envio espera os cliques pararem para mandar só o último
+const VOL = {idx: null, until: 0, timer: 0};
+function renderVol(v){
+  if (Date.now() > VOL.until || VOL.idx == null) VOL.idx = volIdx(v);
+  $("somBtn").classList.toggle("on", VOL.idx > 0);
+  $("somBtn").textContent = VOL_TXT[VOL.idx];
+}
+$("somBtn").onclick = () => {
   if (!S) return;
-  const l = S.vision.volumes, i = (volIdx(S.vision) + 1) % l.length;
-  if (await post(`/api/som?vol=${l[i]}`, "Falha ao mudar o volume")) toast(`Som: ${VOL_TXT[i].slice(3).toLowerCase()}`, true);
+  const l = S.vision.volumes;
+  if (VOL.idx == null) VOL.idx = volIdx(S.vision);
+  VOL.idx = (VOL.idx + 1) % l.length;
+  VOL.until = Date.now() + 3000;           // respostas antigas não desfazem a escolha
+  renderVol(S.vision);
+  clearTimeout(VOL.timer);
+  VOL.timer = setTimeout(async () => {
+    const i = VOL.idx;
+    VOL.until = Date.now() + 3000;
+    if (await post(`/api/som?vol=${l[i]}`, "Falha ao mudar o volume")) {
+      // Confirmado: volta a seguir o status depois que as consultas já a caminho chegarem
+      if (VOL.idx === i) VOL.until = Date.now() + 1500;
+      toast(`Som: ${VOL_TXT[i].slice(3).toLowerCase()}`, true);
+    }
+  }, 350);
 };
 $("mirBtn").onclick = () => post(`/api/espelhar?on=${S && S.vision.mirror ? 0 : 1}`, "Falha");
 $("relBtn").onclick = () => post(S && S.released ? "/api/resume" : "/api/release", "Falha");
@@ -890,8 +911,7 @@ function render(s){
   $("cThr").textContent = `${Math.round(v.threshold*100)}% de semelhança`;
   $("cCal").textContent = `nariz ${v.calib.r} · altura ${v.calib.t}`;
   $("mirBtn").classList.toggle("on", v.mirror);
-  $("somBtn").classList.toggle("on", v.volume > 0);
-  $("somBtn").textContent = VOL_TXT[volIdx(v)];
+  renderVol(v);
   renderCams(v);
   [...$("moods").children].forEach(b => b.classList.toggle("on", +b.dataset.id === v.moodOverride));
   document.title = (cls === "ok" && v.camOk ? "🟢 " : "🔴 ") + "Monitoramento Interativo";
