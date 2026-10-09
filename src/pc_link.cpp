@@ -30,7 +30,7 @@ static void sendStatus() {
     Serial.print(i ? "," : "");
     Serial.print(ledGet(i) ? 1 : 0);
   }
-  Serial.println("]}");
+  Serial.printf("],\"vol\":%u}\n", buzzerVolume());
 }
 
 static void sendError(const char* msg) {
@@ -93,11 +93,17 @@ static void runCommand(char* cmd) {
     buzzerPlay((uint8_t)t);
   } else if (strncmp(cmd, "TONE ", 5) == 0) {
     long f, ms;
-    if (!readInt(args, f) || !readInt(args, ms) || f < 100 || f > 10000 || ms < 1 || ms > 3000) {
-      sendError("use TONE freq(100..10000) ms(1..3000)");
+    if (!readInt(args, f) || !readInt(args, ms) || (f != 0 && f < 100) || f > 10000 || ms < 1 || ms > 3000) {
+      sendError("use TONE freq(0 ou 100..10000) ms(1..3000)");
       return;
     }
     buzzerTone((uint16_t)f, (uint16_t)ms);
+  } else if (strncmp(cmd, "VOL ", 4) == 0) {
+    long v;
+    if (!readInt(args, v) || v < 0 || v > 100) { sendError("use VOL 0..100"); return; }
+    buzzerSetVolume((uint8_t)v);
+    Serial.printf("[PC] Volume do buzzer: %ld%%\n", v);
+    sendStatus();
   } else if (strcmp(cmd, "IDLE") == 0) {
     faceIdle();
   } else if (strcmp(cmd, "NAMES") == 0 || strncmp(cmd, "NAMES ", 6) == 0) {

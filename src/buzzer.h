@@ -17,8 +17,13 @@ void buzzerBegin();
 // Começa a tocar um som (interrompe o que estiver tocando)
 void buzzerPlay(uint8_t tipo);
 
-// Toca um tom avulso (freq em Hz, duração em ms): para testar o buzzer
+// Toca um tom avulso (freq em Hz, duração em ms): para testar o buzzer.
+// freq 0 = liga o pino direto (3,3 V), o jeito certo de tocar um buzzer ativo
 void buzzerTone(uint16_t freq, uint16_t ms);
+
+// Volume 0..100 (0 = mudo: os sons são ignorados)
+void buzzerSetVolume(uint8_t v);
+uint8_t buzzerVolume();
 
 // Deve ser chamada sempre no loop(): avança as notas do som em andamento
 void buzzerLoop();

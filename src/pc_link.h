@@ -16,13 +16,15 @@
 //   BEEP <tipo>                             -> toca um som no buzzer (sem resposta):
 //                                              1 = pessoa apareceu, 2 = tique da captura
 //                                              automática, 3 = captura terminada
-//   TONE <freq> <ms>                        -> tom avulso (100..10000 Hz, até 3000 ms), para teste
+//   TONE <freq> <ms>                        -> tom avulso (100..10000 Hz, até 3000 ms), para
+//                                              teste; freq 0 = pino ligado direto (buzzer ativo)
+//   VOL <0..100>                            -> volume do buzzer (0 = mudo); responde o STATUS
 //
 // Respostas começam com '@' seguido de JSON:
 //   @{"fw":"rosto-esp32","ver":3,"uptime":12,"oled":true,"state":"seguindo",
 //     "count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","",...],
-//     "fps":29,"looks":350,"leds":[1,1,1]}
-//   (state = seguindo | procurando | dormindo; count = emojis na tela;
+//     "fps":29,"looks":350,"leds":[1,1,1],"vol":100}
+//   (vol = volume do buzzer; state = seguindo | procurando | dormindo; count = emojis na tela;
 //    looks conta os comandos L/M)
 //   @{"error":"mensagem"}
 // Linhas sem '@' são apenas mensagens de log.

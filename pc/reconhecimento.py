@@ -32,7 +32,7 @@ Rotas da API local:
     POST /api/auto?on=0|1&modo=qualquer|especifico
                                       captura automática de desconhecidos (salvos como
                                       "Desconhecido N"); especifico = só quem olhar fixo
-    POST /api/som?on=0|1              liga/desliga os beeps do buzzer da placa
+    POST /api/som?vol=0..100          volume dos beeps do buzzer da placa (0 = mudo)
     POST /api/humor?id=-1..5          -1 = automático; 0..5 = expressão fixa
     POST /api/calibrar                "de frente para a câmera" = cabeça reta
     POST /api/espelhar?on=0|1         espelha a imagem (o emoji imita como espelho)
@@ -142,6 +142,7 @@ OLED_OLHANDO = "Permaneça olhando"  # o mesmo aviso no visor (cabe em NAME_MAX)
 BEEP_PESSOA, BEEP_TIQUE, BEEP_FIM = 1, 2, 3
 BEEP_PESSOA_S = 1.5     # no máximo 1 beep de "pessoa apareceu" a cada N s
 BEEP_TIQUE_S = 0.35     # intervalo dos beeps de continuidade da captura automática
+VOLUMES = [0, 20, 50, 100]  # níveis do botão de som do painel: mudo, baixo, médio, alto
 NAME_MAX = 20           # cabe numa linha do OLED
 FACE_MAX = 8            # emojis que cabem no OLED (= FACE_MAX de src/face.h)
 BOOT_ID = f"{time.time():.3f}"  # identifica esta execução do programa
@@ -671,7 +672,7 @@ class Vision:
         self.auto = None             # captura em andamento: {"id": track, "samples": [...], ...}
         self.auto_info = {"state": "parado", "msg": "", "count": 0, "fix": 0.0, "last": "", "seq": 0}
         self.renames = deque()       # (antigo, novo) para atualizar os rostos na câmera
-        self.sound = True            # beeps no buzzer da placa
+        self.volume = 100            # volume do buzzer da placa, 0..100 (0 = mudo)
         self.beeps = deque(maxlen=8) # sons pedidos; o sender() manda para a placa
         self.beep_pessoa = 0.0       # último beep de "pessoa apareceu"
         self.beep_tique = 0.0        # último tique da captura automática
@@ -1006,7 +1007,7 @@ class Vision:
             print(f"Pessoa cadastrada: {en['name']}")
 
     def beep(self, tipo):
-        if self.sound:
+        if self.volume:
             self.beeps.append(tipo)
 
     # ----- captura automática -----
@@ -1241,7 +1242,8 @@ class Vision:
             "fps": round(self.fps, 1),
             "frameSize": list(self.frame_size),
             "mirror": self.mirror,
-            "sound": self.sound,
+            "volume": self.volume,
+            "volumes": VOLUMES,
             "moodOverride": self.mood_override,
             "moods": MOODS,
             "faceMax": FACE_MAX,
@@ -1259,6 +1261,7 @@ def sender(board, vision):
     NAMES sempre que os nomes na placa forem diferentes dos desejados."""
     last_idle = 0.0
     last_name_try = 0.0
+    last_vol_try = 0.0
     while True:
         time.sleep(1 / SEND_HZ)
         if not board.answering():
@@ -1278,6 +1281,13 @@ def sender(board, vision):
             last_name_try = now
             data = b"|".join(d for d, _ in texts[:len(tgts)])
             board.command(b"NAMES " + data if data else b"NAMES", lambda r: "names" in r)
+            continue
+        # Volume do buzzer: a placa guarda o seu; acerta quando for diferente do painel
+        with board.lock:
+            vol = board.status.get("vol") if board.status else None
+        if vol is not None and vol != vision.volume and now - last_vol_try > 1.0:
+            last_vol_try = now
+            board.command(f"VOL {vision.volume}", lambda r: "vol" in r)
             continue
 
         if tgts:
@@ -1451,8 +1461,11 @@ def make_handler(board, vision, db, reg):
                 if not vision.calibrate():
                     return self._send(409, {"error": "Nenhum rosto na câmera para calibrar"})
             elif path == "/api/som":
-                vision.sound = q.get("on", "1") == "1"
-                if not vision.sound:
+                vol = q.get("vol", "")
+                if not vol.isdigit() or int(vol) > 100:
+                    return self._send(400, {"error": "vol deve ser de 0 a 100"})
+                vision.volume = int(vol)
+                if not vision.volume:
                     vision.beeps.clear()
             elif path == "/api/espelhar":
                 vision.mirror = q.get("on", "1") == "1"

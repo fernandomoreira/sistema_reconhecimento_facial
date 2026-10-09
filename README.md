@@ -44,6 +44,8 @@ pessoa na câmera. Rosto e foto desfocados no print por privacidade.</sub>
 | 🙂 **Um emoji 3D por pessoa** | até 8 no OLED: cada cabeça gira junto com a sua pessoa, cresce quando ela chega perto e pisca sozinha (~31 qps) |
 | 😄 **Expressões automáticas** | surpreso quando alguém aparece, feliz para conhecidos, curioso para desconhecidos, dorme sozinho |
 | 💡 **3 LEDs indicadores** | 🟡 alguém na câmera · 🟢 alguém cadastrado · 🔴 alguém não reconhecido (podem acender juntos) |
+| 🔊 **Buzzer** | beep quando alguém aparece, beeps de continuidade durante a captura automática e sinal ao terminar; volume e mudo pelo painel |
+| 🤖 **Captura automática** | cadastra sozinho quem não é reconhecido (qualquer pessoa, ou só quem olhar fixo para a câmera) como “Desconhecido 1, 2…”; o nome é editado depois |
 | 🖥️ **Painel web** | câmera ao vivo, prévia do emoji, cadastro de pessoas, busca de câmeras, estado da placa |
 | 🕒 **Registro de aparições** | banco SQLite com toda pessoa que passou pela câmera, quando entrou, quando saiu e por quanto tempo; as 5 últimas aparecem no painel |
 | 📊 **Relatórios** | por período e por pessoa: totais, tempo por pessoa, por dia e por hora, lista completa, exportação para Excel (CSV) e impressão/PDF |
@@ -120,7 +122,7 @@ viram emoji **as mais perto da câmera**, mostradas da esquerda para a direita.
 | ESP32 DevKit (ESP32-WROOM-32) | 1 |
 | Display OLED SSD1306 128x64 I2C (endereço 0x3C) | 1 |
 | LEDs 5 mm (amarelo, verde, vermelho) + resistores 220 Ω | 3 |
-| Buzzer 3,3 V (no GPIO 23) | 1 |
+| Buzzer passivo (no GPIO 23) | 1 |
 | Webcam (a do notebook serve; aceita várias) | 1+ |
 
 | OLED | ESP32 | | LED | GPIO | Acende quando |
@@ -131,9 +133,20 @@ viram emoji **as mais perto da câmera**, mostradas da esquerda para a direita.
 | SCL | GPIO 22 | | 🔊 Buzzer | GPIO 23 | beep curto quando alguém aparece; beeps curtinhos durante a captura automática e 3 notas quando ela termina |
 
 Cada LED: `GPIO ──[220 Ω]──►|── GND`. GPIO 5 e 15 são *strapping pins*, mas com o LED ligado
-para o GND o boot não é afetado. Buzzer: `GPIO 23 ── (+) buzzer (−) ── GND`. O firmware usa
-tom (buzzer **passivo**); se o seu for **ativo** e o som sair rouco, mude `BUZZER_ATIVO` para
-`true` em `src/buzzer.cpp`.
+para o GND o boot não é afetado.
+
+**Buzzer:** `GPIO 23 ── (+) buzzer (−) ── GND`. O firmware toca notas por PWM (buzzer
+**passivo**) e o volume é ajustado pelo painel. Se o seu buzzer for **ativo** (apita sozinho com
+3,3 V, sempre no mesmo tom), mude `BUZZER_ATIVO` para `true` em `src/buzzer.cpp`.
+
+> [!TIP]
+> Ligado direto no pino (3,3 V) o buzzer soa **baixo**. Para ficar bem mais alto, use um
+> transistor e alimente o buzzer com 5 V (o firmware não muda):
+> ```
+> GPIO 23 ──[1 kΩ]── base do NPN (BC547 / 2N2222)
+> 5V (VIN) ── (+) buzzer (−) ── coletor do NPN
+> emissor do NPN ── GND
+> ```
 
 ## 🚀 Instalação
 
@@ -182,7 +195,8 @@ painel em **http://localhost:8000**.
 |---|---|
 | **📷 Câmera e emoji** | vídeo ao vivo com os rostos marcados (verde = conhecido, laranja = desconhecido; borda grossa = virou emoji), **prévia do OLED** e barras com a pose da pessoa mais perto |
 | **🙂 Emojis no visor** | de **1** (só a pessoa mais perto) até **8** (todos que cabem): um emoji para cada pessoa na câmera |
-| **🎯 Calibrar / 🪞 Espelhar / 🔊 Som** | define a "cabeça reta" / imagem espelhada (o emoji imita como espelho) / liga e desliga os beeps |
+| **🎯 Calibrar / 🪞 Espelhar** | define a "cabeça reta" / imagem espelhada (o emoji imita como espelho) |
+| **🔊 Som** | volume dos beeps do buzzer; cada clique passa por **🔇 Mudo → 🔈 Baixo → 🔉 Médio → 🔊 Alto** |
 | **🔍 Buscar câmeras** | procura as câmeras ligadas ao PC, com o nome do Windows; avisa se uma está **ocupada** ou com **imagem preta** |
 | **➕ Cadastrar pessoa** | 15 fotos em ~3 s; cadastrar o mesmo nome de novo **junta** amostras (óculos, outra luz...) |
 | **🤖 Captura automática** | botão deslizante **Sim/Não**. Com Sim, escolha: **Capturar qualquer pessoa** (quem passar na frente da câmera) ou **Captura específica** (só quem olhar fixamente para a câmera por 2 s; a câmera e o visor mostram “Permaneça olhando para finalizar a captura”). Só rostos não reconhecidos são capturados (15 fotos) e salvos como **Desconhecido 1, 2, 3…** |
@@ -221,13 +235,14 @@ sem `@` são log.
 | `NAMES <nome1>\|<nome2>\|...` | nomes na ordem do `M` (CP437, até 20 cada; vazio = desconhecida) |
 | `NAME <texto>` | nome só da 1ª pessoa (`NAME` sozinho apaga) |
 | `BEEP <tipo>` | som no buzzer, **sem resposta**: 1 = pessoa apareceu, 2 = tique da captura automática, 3 = captura terminada |
-| `TONE <freq> <ms>` | tom avulso para testar o buzzer (100..10000 Hz, até 3000 ms; sem resposta) |
+| `VOL <0..100>` | volume do buzzer (0 = mudo); responde o estado (campo `vol`) |
+| `TONE <freq> <ms>` | tom avulso para testar o buzzer (100..10000 Hz, até 3000 ms; sem resposta). `freq` 0 = pino ligado direto (teste de buzzer ativo) |
 
 <details>
 <summary><b>Exemplo de respostas e teste pelo Monitor Serial</b></summary>
 
 ```
-@{"fw":"rosto-esp32","ver":3,"uptime":97,"oled":true,"state":"seguindo","count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","","","","","","",""],"fps":30,"looks":590,"leds":[1,1,1]}
+@{"fw":"rosto-esp32","ver":3,"uptime":97,"oled":true,"state":"seguindo","count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","","","","","","",""],"fps":30,"looks":590,"leds":[1,1,1],"vol":100}
 @{"error":"comando desconhecido"}
 ```
 
@@ -253,7 +268,7 @@ Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Trist
 | POST | `/api/cadastrar` (corpo `{"nome": "..."}`) · `/api/cancelar` | cadastro |
 | POST | `/api/remover?nome=...` | apaga uma pessoa |
 | POST | `/api/renomear` (corpo `{"nome": "...", "novo": "...", "juntar": false}`) | troca o nome (409 se já existe e `juntar` é falso) |
-| POST | `/api/som?on=0\|1` | beeps do buzzer da placa |
+| POST | `/api/som?vol=0..100` | volume dos beeps do buzzer da placa (0 = mudo) |
 | POST | `/api/auto?on=0\|1&modo=qualquer\|especifico` | captura automática de desconhecidos |
 | POST | `/api/humor?id=-1..5` | −1 = automático |
 | POST | `/api/calibrar` | posição atual = cabeça reta |
@@ -298,6 +313,7 @@ sistema_reconhecimento_facial/
 │   ├── display.h/.cpp      # liga o OLED
 │   ├── face.h/.cpp         # animação e desenho do emoji 3D + lógica dos LEDs
 │   ├── leds.h/.cpp         # LEDs indicadores
+│   ├── buzzer.h/.cpp       # beeps no GPIO 23 (PWM, com volume, sem travar o loop)
 │   └── pc_link.h/.cpp      # comandos recebidos do PC pela serial
 └── pc/                     # programa do PC
     ├── reconhecimento.py   # câmera, reconhecimento, serial e servidor do painel
