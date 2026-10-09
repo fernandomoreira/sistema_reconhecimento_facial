@@ -204,7 +204,7 @@ painel em **http://localhost:8000**.
 | **🎭 Expressão** | **Automático** ou uma expressão fixa (Neutro, Feliz, Curioso, Surpreso, Bravo, Triste) |
 | **💡 LEDs** | embaixo da câmera: os 3 LEDs da placa, acesos em tempo real |
 | **🕒 Últimas aparições** | as 5 aparições mais recentes: foto, pessoa, entrada, saída e tempo na câmera (conta ao vivo para quem ainda está lá); **🗑️ Apagar** em cada uma apaga o registro e a foto (pede confirmação; quem ainda está na câmera não pode ser apagado) |
-| **📊 Relatórios** (`/relatorios`) | filtros por período (hoje, ontem, 7/30 dias, mês, tudo ou datas) e pessoa; resumo, tabelas por pessoa e por dia, gráfico por hora, lista completa paginada, **Exportar para Excel (CSV)** e **Imprimir / PDF**; **💾 Consumo do sistema** (arquivos, imagens, espaço usado por rostos, banco e modelos, banco de dados e disco livre) e **🧹 Liberar espaço** (apaga aparições antigas mantendo o último dia, mês, ano ou a partir de uma data; ou só as fotos delas) |
+| **📊 Relatórios** (`/relatorios`) | filtros por período (hoje, ontem, 7/30 dias, mês, tudo ou datas) e pessoa; resumo, tabelas por pessoa e por dia, gráfico por hora, lista completa paginada (com **🗑️ Apagar** em cada aparição), **Exportar para Excel (CSV)** e **Imprimir / PDF**; **💾 Consumo do sistema** (arquivos, imagens, espaço usado por rostos, banco e modelos, banco de dados e disco livre) e **🧹 Liberar espaço** (apaga aparições antigas mantendo o último dia, mês, ano ou a partir de uma data; ou só as fotos delas) |
 | **Placa · Câmera · Portas · Log** | estado da conexão, quadros por segundo, portas seriais e mensagens da placa |
 
 ### O que o emoji faz sozinho

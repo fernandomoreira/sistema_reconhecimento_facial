@@ -76,6 +76,8 @@
   .msg.ok{color:var(--ok)}
   .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:13px;color:var(--muted)}
   .meta{color:var(--muted);font-size:12px;margin:0}
+  .btn.chip{padding:5px 10px;font-size:12.5px}
+  #toast.ok{background:#15803d}
   #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--bad);
     color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;display:none;max-width:90vw}
 
@@ -171,7 +173,7 @@
     <h2>🧾 Todas as aparições <small id="listaInfo">—</small></h2>
     <div class="tbl"><table>
       <thead><tr><th class="no-print"></th><th>Pessoa</th><th>Data</th><th>Entrada</th><th>Saída</th>
-        <th class="n">Duração</th><th>Câmera</th><th class="n">Semelhança</th></tr></thead>
+        <th class="n">Duração</th><th>Câmera</th><th class="n">Semelhança</th><th class="no-print"></th></tr></thead>
       <tbody id="lista"></tbody>
     </table></div>
     <div class="pager no-print">
@@ -234,7 +236,7 @@ const fmtTempo = s => {
 const dt = t => new Date(t*1000);
 const fmtDH = t => dt(t).toLocaleString("pt-BR", {day:"2-digit", month:"2-digit", year:"2-digit", hour:"2-digit", minute:"2-digit"});
 const nome = p => p ? `<b>${esc(p)}</b>` : `<b class="unk">Desconhecido</b>`;
-function toast(msg){ const t = $("toast"); t.textContent = msg; t.style.display = "block";
+function toast(msg, good){ const t = $("toast"); t.textContent = msg; t.className = good ? "ok" : ""; t.style.display = "block";
   clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = "none", 3000); }
 
 // --- Período -> datas ---
@@ -326,10 +328,32 @@ function render(){
         <td>${nome(a.pessoa)}</td><td>${i.toLocaleDateString("pt-BR")}</td><td>${i.toLocaleTimeString("pt-BR")}</td>
         <td>${a.ativo ? `<span class="agora">na câmera agora</span>` : f.toLocaleTimeString("pt-BR")}</td>
         <td class="n">${fmtTempo(a.duracao)}</td><td>${esc(a.camera)}</td>
-        <td class="n">${a.pessoa ? Math.round(a.confianca*100) + "%" : "—"}</td></tr>`;
+        <td class="n">${a.pessoa ? Math.round(a.confianca*100) + "%" : "—"}</td>
+        <td class="no-print n">${a.ativo ? "" : `<button class="btn chip danger" data-apagar="${a.id}" title="Apagar esta aparição (registro e foto)">🗑️ Apagar</button>`}</td></tr>`;
     }).join("")
-    : `<tr><td colspan="8" class="empty">Nenhuma aparição neste período.</td></tr>`;
+    : `<tr><td colspan="9" class="empty">Nenhuma aparição neste período.</td></tr>`;
 }
+
+// Apagar uma aparição da lista: 1º clique pede confirmação, o 2º apaga o registro e a foto
+$("lista").onclick = async e => {
+  const b = e.target.closest("button[data-apagar]");
+  if (!b) return;
+  if (!b.classList.contains("confirm")) {
+    b.classList.add("confirm"); b.textContent = "Confirmar?";
+    setTimeout(() => { b.classList.remove("confirm"); b.textContent = "🗑️ Apagar"; }, 3000);
+    return;
+  }
+  b.disabled = true;
+  try {
+    const r = await fetch(`/api/aparicoes/apagar?id=${b.dataset.apagar}`, {method: "POST"});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    toast("Aparição apagada", true);
+    // Recarrega a mesma página (ou a anterior, se esta ficou vazia) e o consumo
+    const pag = R && R.lista.length === 1 && R.pagina > 1 ? R.pagina - 1 : (R ? R.pagina : 1);
+    gerar(pag); carregarConsumo(); limPrevia();
+  } catch(e){ toast(e.message || "Falha ao apagar"); b.disabled = false; }
+};
 
 $("gerar").onclick = () => gerar(R ? R.pagina : 1);
 $("prev").onclick = () => gerar(R.pagina - 1);
