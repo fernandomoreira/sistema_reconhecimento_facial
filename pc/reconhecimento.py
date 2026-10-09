@@ -42,6 +42,7 @@ Rotas da API local:
     GET  /relatorios                  página de relatórios das aparições
     GET  /api/aparicoes?n=5           últimas aparições (quem passou pela câmera e quanto tempo)
     GET  /api/aparicoes/foto/<id>     foto pequena do rosto daquela aparição
+    POST /api/aparicoes/apagar?id=N   apaga uma aparição (registro e foto); 409 se está na câmera
     GET  /api/relatorio?de=&ate=&pessoa=&pagina=   totais por pessoa/dia/hora + lista
     GET  /api/relatorio.csv?de=&ate=&pessoa=       todas as aparições do filtro em CSV
     GET  /api/consumo                 arquivos, imagens e espaço usado (rostos, banco, modelos, disco)
@@ -1466,6 +1467,14 @@ def make_handler(board, vision, db, reg):
             elif path == "/api/remover":
                 if not db.remove(q.get("nome", "")):
                     return self._send(404, {"error": "Pessoa não encontrada"})
+            elif path == "/api/aparicoes/apagar":
+                ident = q.get("id", "")
+                res = reg.apagar(int(ident)) if ident.isdigit() else "nao_existe"
+                if res == "nao_existe":
+                    return self._send(404, {"error": "Aparição não encontrada"})
+                if res == "ativo":
+                    return self._send(409, {"error": "A pessoa ainda está na câmera: espere ela sair para apagar"})
+                return self._send(200, reg.recentes(5))
             elif path == "/api/limpar":
                 try:
                     if body.get("antes"):

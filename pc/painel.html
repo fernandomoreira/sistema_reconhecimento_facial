@@ -160,6 +160,7 @@
     margin-right:6px;box-shadow:0 0 8px var(--ok);animation:pulse 1.2s infinite}
   .aps .dur{font-variant-numeric:tabular-nums;font-weight:600}
   .aps .unk{color:#fdba74}
+  .aps td:last-child{text-align:right;width:1%;white-space:nowrap}
   @keyframes pulse{50%{opacity:.35}}
   #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--bad);
     color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;display:none;max-width:90vw}
@@ -273,8 +274,8 @@
     </h2>
     <div class="tbl">
       <table class="aps">
-        <thead><tr><th></th><th>Pessoa</th><th>Entrou</th><th>Saiu</th><th>Tempo na câmera</th><th>Câmera</th></tr></thead>
-        <tbody id="aps"><tr><td colspan="6" class="empty">Carregando…</td></tr></tbody>
+        <thead><tr><th></th><th>Pessoa</th><th>Entrou</th><th>Saiu</th><th>Tempo na câmera</th><th>Câmera</th><th></th></tr></thead>
+        <tbody id="aps"><tr><td colspan="7" class="empty">Carregando…</td></tr></tbody>
       </table>
     </div>
     <p class="hint">Todas as aparições ficam gravadas neste PC (<code>pc/dados/monitoramento.db</code>);
@@ -1007,15 +1008,34 @@ function renderAps(){
   }
   renderAps.key = key;
   $("aps").innerHTML = !AP.itens.length
-    ? `<tr><td colspan="6" class="empty">Nenhuma aparição registrada ainda. Fique na frente da câmera por mais de 1 segundo.</td></tr>`
+    ? `<tr><td colspan="7" class="empty">Nenhuma aparição registrada ainda. Fique na frente da câmera por mais de 1 segundo.</td></tr>`
     : AP.itens.map(a => `<tr>
         <td>${a.foto ? `<img src="/api/aparicoes/foto/${a.id}" alt="" loading="lazy">` : `<span class="noimg">🙂</span>`}</td>
         <td>${a.pessoa ? `<b>${esc(a.pessoa)}</b>` : `<b class="unk">Desconhecido</b>`}</td>
         <td>${fmtHora(a.inicio)}</td>
         <td>${a.ativo ? `<span class="agora">na câmera agora</span>` : fmtHora(a.fim)}</td>
         <td class="dur"${a.ativo ? ` data-ini="${a.inicio}"` : ""}>${fmtTempo(a.ativo ? agora - a.inicio : a.duracao)}</td>
-        <td style="color:var(--muted)">${esc(a.camera)}</td></tr>`).join("");
+        <td style="color:var(--muted)">${esc(a.camera)}</td>
+        <td>${a.ativo ? "" : `<button class="btn chip danger" data-apagar="${a.id}" title="Apagar esta aparição (registro e foto)">🗑️ Apagar</button>`}</td></tr>`).join("");
 }
+// Apagar uma aparição: 1º clique pede confirmação, o 2º apaga o registro e a foto
+$("aps").onclick = async e => {
+  const b = e.target.closest("button[data-apagar]");
+  if (!b) return;
+  if (!b.classList.contains("confirm")) {
+    b.classList.add("confirm"); b.textContent = "Confirmar?";
+    setTimeout(() => { b.classList.remove("confirm"); b.textContent = "🗑️ Apagar"; }, 3000);
+    return;
+  }
+  b.disabled = true;
+  try {
+    const r = await fetch(`/api/aparicoes/apagar?id=${b.dataset.apagar}`, {method: "POST"});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    AP = j; renderAps.key = null; renderAps();
+    toast("Aparição apagada", true);
+  } catch(e){ toast(e.message || "Falha ao apagar"); b.disabled = false; }
+};
 async function pollAps(){
   try {
     AP = await fetch("/api/aparicoes?n=5", {cache:"no-store"}).then(r => r.json());

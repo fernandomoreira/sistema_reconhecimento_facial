@@ -98,7 +98,8 @@ ou `{"error":"..."}`); linhas sem `@` são log. Faixas: x,y −100..100; yaw −
   (`TRACK_KEEP_S`), quando a câmera para (`_set_no_face`) e no `atexit`.
 - Nome da aparição = mais votado com ≥ `NOME_MIN` dos votos; cadastro feito durante a
   aparição zera os votos dela. Cadastrado que volta em ≤ `JUNTAR_S` continua a mesma aparição.
-- Painel: quadro "Últimas aparições" (`/api/aparicoes?n=5`, a cada 2 s). Página
+- Painel: quadro "Últimas aparições" (`/api/aparicoes?n=5`, a cada 2 s), com 🗑️ Apagar por linha
+  (`/api/aparicoes/apagar?id=` → `Registro.apagar()`; recusa `ativo = 1`, a sessão ainda grava nela). Página
   `pc/relatorios.html` em `/relatorios` (`/api/relatorio`, `/api/relatorio.csv` com `;` + BOM).
 - Relatórios também têm **Consumo do sistema** (`/api/consumo`: `consumo()`/`pasta_info()` no
   reconhecimento.py + `Registro.consumo()`) e **Liberar espaço** (`/api/limpar` →

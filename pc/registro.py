@@ -283,6 +283,18 @@ class Registro:
     # ------------------------------------------------------------------
     # Consumo e limpeza (página de relatórios)
     # ------------------------------------------------------------------
+    def apagar(self, ident):
+        """Apaga uma aparição (registro e foto). Retorna "ok", "ativo" (a pessoa está na
+        câmera agora: a aparição ainda está sendo gravada) ou "nao_existe"."""
+        with self.lock, self.db:
+            r = self.db.execute("SELECT ativo FROM aparicoes WHERE id = ?", (ident,)).fetchone()
+            if not r:
+                return "nao_existe"
+            if r["ativo"]:
+                return "ativo"
+            self.db.execute("DELETE FROM aparicoes WHERE id = ?", (ident,))
+        return "ok"
+
     def tamanho_arquivo(self):
         """Bytes do banco no disco (o .db mais os arquivos -wal e -shm do SQLite)."""
         return sum(p.stat().st_size for p in (self.arquivo, Path(f"{self.arquivo}-wal"),
