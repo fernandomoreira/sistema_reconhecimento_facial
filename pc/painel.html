@@ -165,6 +165,16 @@
   #toast{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);background:var(--bad);
     color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;display:none;max-width:90vw}
   #toast.ok{background:#15803d}
+  /* --- Acesso pela internet --- */
+  .acgrid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));align-items:start}
+  input[type=password]{flex:1;min-width:0;font:inherit;font-size:16px;color:var(--txt);background:#11141a;
+    border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+  input[type=password]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.2)}
+  .acurl{display:flex;gap:8px;align-items:center;margin-top:12px;padding:8px 10px;background:#11141a;
+    border:1px solid rgba(34,197,94,.55);border-radius:12px}
+  #acMsg:empty{display:none}
+  .acurl a{flex:1;min-width:0;color:#86efac;font:600 14px ui-monospace,Consolas,monospace;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -176,6 +186,7 @@
   <div class="badges">
     <span id="camBadge" class="badge bad">Câmera</span>
     <span id="topBadge" class="badge bad">Desconectada</span>
+    <button class="btn danger" id="offBtn" title="Fecha o programa por completo: câmera, painel, porta da placa e acesso pela internet">⏻ Encerrar</button>
   </div>
 </header>
 
@@ -280,6 +291,43 @@
     </div>
     <p class="hint">Todas as aparições ficam gravadas neste PC (<code>pc/dados/monitoramento.db</code>);
       aqui aparecem as 5 mais recentes. Veja tudo e gere relatórios em <a href="/relatorios" target="_blank">Relatórios</a>.</p>
+  </section>
+
+  <!-- Acesso pela internet (pc/acesso.py): túnel do Cloudflare + senha -->
+  <section class="card wide" id="acCard">
+    <h2>🌐 Acesso pela internet <span class="badge bad" id="acBadge">Desligado</span></h2>
+    <div id="acLocal">
+      <div class="acgrid">
+        <div>
+          <label class="switch">
+            <input type="checkbox" id="acSw" role="switch">
+            <span class="slider"></span>
+            <span>Acessar de fora de casa: <b id="acTxt">Não</b></span>
+          </label>
+          <p class="msg" id="acMsg"></p>
+          <div class="acurl" id="acUrl" style="display:none">
+            <a id="acLink" target="_blank" rel="noopener"></a>
+            <button class="btn chip" id="acCopy">📋 Copiar</button>
+          </div>
+        </div>
+        <div>
+          <div class="row" style="margin-top:0">
+            <input type="password" id="acSenha" placeholder="Nova senha (mín. 8 letras)" autocomplete="new-password">
+            <button class="btn" id="acSenhaBtn">💾 Salvar senha</button>
+          </div>
+          <p class="msg" id="acSenhaMsg"></p>
+        </div>
+      </div>
+      <p class="hint">Cria um endereço <b>https://…trycloudflare.com</b> que abre este painel de qualquer lugar
+        (celular no 4G, outro PC), sem mexer no roteador. Quem vem de fora precisa da <b>senha</b>; aqui no PC
+        continua sem senha. O endereço <b>muda</b> a cada vez que o acesso liga: copie o novo daqui.
+        Trocar a senha desconecta todo mundo que estava logado.</p>
+    </div>
+    <div id="acRemoto" style="display:none">
+      <p class="msg">Você está acessando pela internet. Senha, endereço e encerrar o programa só podem
+        ser mudados no próprio PC.</p>
+      <div class="row"><button class="btn" id="sairBtn">🚪 Sair</button></div>
+    </div>
   </section>
 
   <!-- ===================== Informações técnicas ===================== -->
@@ -888,6 +936,7 @@ function editName(btn){
 
 function render(s){
   S = s;
+  renderAcesso(s && s.acesso);
   const [cls, label, msg] = connState(s || {});
   const portName = s && s.port && cls === "ok" ? " · " + s.port.name : "";
   $("topBadge").className = "badge " + cls; $("topBadge").textContent = label + portName;
@@ -969,7 +1018,7 @@ async function pollAlvo(){
     const r = await fetch("/api/alvo", {cache:"no-store"});
     renderAlvo(await r.json());
   } catch(e){ renderAlvo(null); }
-  setTimeout(pollAlvo, 100);
+  if (!pollAlvo.parar) setTimeout(pollAlvo, 100);
 }
 async function post(url, failMsg, body){
   try {
@@ -1043,12 +1092,88 @@ async function pollAps(){
     renderAps();
   } catch(e){}
 }
+// ===========================================================================
+// Acesso pela internet (pc/acesso.py)
+// ===========================================================================
+const AC_ESTADOS = {
+  desligado: ["bad", "Desligado", ""],
+  baixando: ["warn", "Baixando…", "Baixando o cloudflared (só na primeira vez)…"],
+  conectando: ["warn", "Conectando…", "Abrindo o túnel do Cloudflare…"],
+  no_ar: ["ok", "No ar", "No ar. Abra este endereço no celular ou em outro PC:"],
+  erro: ["bad", "Com erro", ""],
+};
+function renderAcesso(a){
+  if (!a) return;
+  $("acLocal").style.display = a.remoto ? "none" : "";
+  $("acRemoto").style.display = a.remoto ? "" : "none";
+  $("offBtn").style.display = a.remoto ? "none" : "";   // pela internet não dá para encerrar
+  const t = a.tunel, [cls, label, msg] = AC_ESTADOS[t.estado] || AC_ESTADOS.erro;
+  $("acBadge").className = "badge " + cls;
+  $("acBadge").textContent = label + (t.estado === "no_ar" && a.logados ? ` · ${a.logados} logado${a.logados > 1 ? "s" : ""}` : "");
+  if (a.remoto) return;
+  $("acSw").checked = t.on; $("acTxt").textContent = t.on ? "Sim" : "Não"; $("acTxt").className = t.on ? "sim" : "";
+  $("acUrl").style.display = t.url ? "" : "none";
+  if (t.url && $("acLink").href !== t.url + "/") { $("acLink").href = t.url; $("acLink").textContent = t.url; }
+  $("acMsg").textContent = t.erro || (t.on ? msg : a.senha ? "" : "Primeiro defina uma senha ao lado.");
+  $("acMsg").className = "msg" + (t.erro ? " bad" : "");
+  if (!$("acSenhaMsg").dataset.fixo)
+    $("acSenhaMsg").textContent = a.senha ? "Senha definida. Digite outra para trocar." : "Nenhuma senha definida ainda.";
+}
+$("acSw").onchange = async () => {
+  const on = $("acSw").checked;
+  if (!await post(`/api/acesso?tunel=${on ? 1 : 0}`, "Falha ao mudar o acesso")) $("acSw").checked = !on;
+};
+$("acSenhaBtn").onclick = async () => {
+  const senha = $("acSenha").value;
+  if (await post("/api/acesso/senha", "Falha ao salvar a senha", {senha})) {
+    $("acSenha").value = "";
+    const m = $("acSenhaMsg"); m.dataset.fixo = 1; m.textContent = "✔ Senha salva."; m.className = "msg ok";
+    setTimeout(() => { delete m.dataset.fixo; m.className = "msg"; }, 4000);
+  }
+};
+$("acSenha").onkeydown = e => { if (e.key === "Enter") $("acSenhaBtn").click(); };
+$("acCopy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("acLink").href.replace(/\/$/, "")); toast("Endereço copiado", true); }
+  catch(e){ toast("Não consegui copiar: selecione o endereço"); }
+};
+$("sairBtn").onclick = async () => {
+  await fetch("/api/sair", {method: "POST"}).catch(() => {});
+  location.href = "/login";
+};
+// Encerrar: 1º clique pede confirmação, o 2º fecha o programa
+$("offBtn").onclick = async () => {
+  const b = $("offBtn");
+  if (!b.classList.contains("confirm")) {
+    b.classList.add("confirm"); b.textContent = "Confirmar? Fecha tudo";
+    setTimeout(() => { b.classList.remove("confirm"); b.textContent = "⏻ Encerrar"; }, 3000);
+    return;
+  }
+  b.disabled = true;
+  try {
+    const r = await fetch("/api/encerrar", {method: "POST"});
+    if (!r.ok) throw new Error((await r.json()).error);
+  } catch(e){ b.disabled = false; return toast(e.message || "Falha ao encerrar"); }
+  clearInterval(pollStatus.t); clearInterval(pollAps.t); clearInterval(renderAps.t); pollAlvo.parar = true;
+  video.onerror = null; video.removeAttribute("src");
+  document.body.innerHTML = `<p style="padding:40px;text-align:center;color:var(--muted)">Programa encerrado.
+    Para abrir de novo, use o atalho <b>Monitoramento Interativo</b> na Área de Trabalho.</p>`;
+};
+// Pela internet, a sessão pode vencer (ou o programa reiniciou): volta para o login
+{
+  const _fetch = window.fetch;
+  window.fetch = async (...args) => {
+    const r = await _fetch(...args);
+    if (r.status === 401 && !["localhost", "127.0.0.1"].includes(location.hostname)) location.href = "/login";
+    return r;
+  };
+}
+
 pollAps();
-setInterval(pollAps, 2000);
-setInterval(renderAps, 1000);
+pollAps.t = setInterval(pollAps, 2000);
+renderAps.t = setInterval(renderAps, 1000);
 
 pollStatus();
-setInterval(pollStatus, 1000);
+pollStatus.t = setInterval(pollStatus, 1000);
 pollAlvo();
 </script>
 </body>

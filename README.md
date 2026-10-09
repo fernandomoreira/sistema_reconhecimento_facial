@@ -174,6 +174,44 @@ python pc/reconhecimento.py
 No Windows basta dar dois cliques em **`abrir_painel.bat`**: ele instala o que faltar e abre o
 painel em **http://localhost:8000**.
 
+#### Atalho na Área de Trabalho (sem janela preta)
+
+Dê dois cliques em **`instalar_atalho.bat`** uma vez. Ele cria o atalho **Monitoramento
+Interativo** (com ícone de emoji) na Área de Trabalho:
+
+- clicou e o programa **não** está rodando → ele liga escondido e abre o painel;
+- clicou e o programa **já** está rodando → só abre o painel no navegador;
+- para fechar: botão **⏻ Encerrar** no topo do painel (pede confirmação). Ele desliga a câmera,
+  a porta da placa e o acesso pela internet;
+- se o programa fechar sozinho ao abrir, aparece uma janela com o erro (o log completo fica em
+  `pc/dados/programa.log`).
+
+| Comando | O que faz |
+|---|---|
+| `instalar_atalho.bat` | só o atalho da Área de Trabalho |
+| `instalar_atalho.bat -Inicializar` | também liga o programa **junto com o Windows** (escondido, sem abrir o navegador) |
+| `instalar_atalho.bat -Remover` | apaga os atalhos |
+
+#### Acesso pela internet (fora de casa)
+
+No card **🌐 Acesso pela internet** do painel:
+
+1. defina uma **senha** (mínimo de 8 letras) e clique em **💾 Salvar senha**;
+2. ligue **Acessar de fora de casa**. Na primeira vez ele baixa o `cloudflared` (~60 MB, em
+   `pc/bin/`);
+3. vai aparecer um endereço **`https://…trycloudflare.com`**. Copie e abra no celular (4G) ou em
+   outro PC, e digite a senha.
+
+Ele usa um túnel do Cloudflare: não precisa abrir porta no roteador nem ter IP fixo.
+O endereço **muda** a cada vez que o acesso liga (e quando o programa reinicia). O acesso fica
+ligado entre as execuções até você desligar.
+
+> [!WARNING]
+> Quem tiver o endereço **e** a senha vê a câmera ao vivo e as fotos das pessoas. Use uma senha
+> forte. Errar a senha 5 vezes bloqueia aquele IP por 10 minutos. Pela internet **não** dá para
+> trocar a senha, desligar o acesso nem encerrar o programa: isso só no próprio PC. Aqui no PC
+> (`localhost`) o painel continua abrindo sem senha.
+
 | Opção | O que faz |
 |---|---|
 | `--camera 1` | usa sempre a câmera 1 (sem isso, ele escolhe sozinho a primeira com imagem) |
@@ -205,6 +243,8 @@ painel em **http://localhost:8000**.
 | **💡 LEDs** | embaixo da câmera: os 3 LEDs da placa, acesos em tempo real |
 | **🕒 Últimas aparições** | as 5 aparições mais recentes: foto, pessoa, entrada, saída e tempo na câmera (conta ao vivo para quem ainda está lá); **🗑️ Apagar** em cada uma apaga o registro e a foto (pede confirmação; quem ainda está na câmera não pode ser apagado) |
 | **📊 Relatórios** (`/relatorios`) | filtros por período (hoje, ontem, 7/30 dias, mês, tudo ou datas) e pessoa; resumo, tabelas por pessoa e por dia, gráfico por hora, lista completa paginada (com **🗑️ Apagar** em cada aparição), **Exportar para Excel (CSV)** e **Imprimir / PDF**; **💾 Consumo do sistema** (arquivos, imagens, espaço usado por rostos, banco e modelos, banco de dados e disco livre) e **🧹 Liberar espaço** (apaga aparições antigas mantendo o último dia, mês, ano ou a partir de uma data; ou só as fotos delas) |
+| **🌐 Acesso pela internet** | senha + botão que liga um endereço `https://…trycloudflare.com` para abrir o painel de fora de casa (veja [Acesso pela internet](#acesso-pela-internet-fora-de-casa)) |
+| **⏻ Encerrar** (no topo) | fecha o programa por completo (pede confirmação; não aparece para quem está pela internet) |
 | **Placa · Câmera · Portas · Log** | estado da conexão, quadros por segundo, portas seriais e mensagens da placa |
 
 ### O que o emoji faz sozinho
@@ -284,6 +324,14 @@ Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Trist
 | GET | `/api/consumo` | arquivos, imagens e bytes de `pc/rostos`, `pc/dados` e `pc/modelos`, banco de dados e disco |
 | POST | `/api/limpar` (corpo `{"dias": 30}` ou `{"antes": "AAAA-MM-DD"}`, `"soFotos"`, `"previa"`) | apaga aparições antigas (ou só as fotos) e compacta o banco; `previa: true` só conta |
 | POST | `/api/port?name=COM12\|auto` · `/api/release` · `/api/resume` | porta serial |
+| GET | `/login` | página de login (só para quem vem pela internet) |
+| POST | `/api/login` (corpo `{"senha": "..."}`) · `/api/sair` | entra (cookie de sessão de 7 dias) / sai; 401 senha errada, 429 bloqueado |
+| POST | `/api/acesso/senha` (corpo `{"senha": "..."}`) | define/troca a senha (só no PC; derruba quem estava logado) |
+| POST | `/api/acesso?tunel=0\|1` | liga/desliga o acesso pela internet (só no PC; precisa de senha) |
+| POST | `/api/encerrar` | fecha o programa (só no PC) |
+
+Fora do `localhost` (pelo túnel) todas as rotas pedem login: páginas redirecionam para `/login`
+e a API responde 401. POST com `Origin` de outro site é recusado (403).
 
 </details>
 
@@ -309,6 +357,7 @@ sistema_reconhecimento_facial/
 ├── platformio.ini          # placa e bibliotecas (Adafruit SSD1306 + GFX)
 ├── requirements.txt        # bibliotecas Python do PC
 ├── abrir_painel.bat        # atalho do Windows: instala o que faltar e abre o painel
+├── instalar_atalho.bat     # cria o atalho da Área de Trabalho (e, se quiser, liga com o Windows)
 ├── CLAUDE.md               # memória do projeto para o Claude Code
 ├── docs/painel.jpg         # print do painel usado neste README
 ├── src/                    # firmware do ESP32
@@ -323,6 +372,12 @@ sistema_reconhecimento_facial/
     ├── registro.py         # banco das aparições (SQLite) e relatórios
     ├── painel.html         # painel (a prévia do emoji é uma cópia em JS de face.cpp)
     ├── relatorios.html     # página de relatórios
+    ├── acesso.py           # acesso pela internet: senha, login e túnel do Cloudflare
+    ├── login.html          # login de quem vem pela internet
+    ├── iniciar.pyw         # o que o atalho roda: liga escondido ou só abre o painel
+    ├── instalar_atalho.ps1 # cria os atalhos (chamado pelo instalar_atalho.bat)
+    ├── icone.ico           # ícone do atalho
+    ├── bin/                # cloudflared.exe, baixado sozinho (no .gitignore)
     ├── modelos/            # YuNet e SFace (.onnx; baixados sozinhos se faltarem)
     ├── rostos/             # pessoas cadastradas — fica só no PC (no .gitignore)
     └── dados/              # monitoramento.db: todas as aparições — fica só no PC (no .gitignore)

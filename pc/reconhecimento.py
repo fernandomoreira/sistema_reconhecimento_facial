@@ -51,6 +51,14 @@ Rotas da API local:
                                       (pessoa: nome, __conhecidos ou __desconhecidos)
     POST /api/port?name=COM12|auto    escolhe a porta serial
     POST /api/release | /api/resume   solta / retoma a porta COM (para gravar firmware)
+
+Acesso pela internet (pc/acesso.py): fora do localhost tudo pede senha.
+    GET  /login                       página de login (só para quem vem de fora)
+    POST /api/login {"senha": "..."}  entra (cookie de sessão); 401 senha errada, 429 bloqueado
+    POST /api/sair                    sai
+    POST /api/acesso/senha {"senha": "..."}   define/troca a senha        (só no PC)
+    POST /api/acesso?tunel=0|1        liga/desliga o túnel do Cloudflare  (só no PC)
+    POST /api/encerrar                fecha o programa                    (só no PC)
 """
 
 import argparse
@@ -66,6 +74,7 @@ import urllib.request
 import webbrowser
 from collections import Counter, deque
 from datetime import datetime
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from math import atan, atan2, cos, degrees, hypot, sin
 from pathlib import Path
@@ -86,6 +95,7 @@ except ImportError:
     raise SystemExit("Falta o pyserial. Instale com:  pip install pyserial")
 
 from registro import Registro  # banco das aparições (pc/registro.py)
+from acesso import COOKIE, SESSAO_S, Acesso, host_local  # acesso pela internet (pc/acesso.py)
 
 try:  # opcional: nomes das câmeras no Windows ("Integrated Webcam"...)
     from pygrabber.dshow_graph import FilterGraph
@@ -99,6 +109,7 @@ FACES_DIR = ROOT / "rostos"
 DB_FILE = FACES_DIR / "pessoas.json"
 REG_FILE = ROOT / "dados" / "monitoramento.db"   # aparições (pc/registro.py)
 RELATORIO_FILE = ROOT / "relatorios.html"
+LOGIN_FILE = ROOT / "login.html"
 
 # Modelos do OpenCV Zoo (baixados sozinhos na primeira vez)
 YUNET = "face_detection_yunet_2023mar.onnx"
@@ -1338,18 +1349,21 @@ def consumo(db, reg):
     }
 
 
-def make_handler(board, vision, db, reg):
+def make_handler(board, vision, db, reg, acesso):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass  # silencia o log de cada requisição
 
-        def _send(self, code, body, ctype="application/json; charset=utf-8", download=None, cache=False):
+        def _send(self, code, body, ctype="application/json; charset=utf-8", download=None, cache=False,
+                  headers=None):
             data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "max-age=86400" if cache else "no-store")
             if download:
                 self.send_header("Content-Disposition", f'attachment; filename="{download}"')
+            for k, v in (headers or {}).items():
+                self.send_header(k, v)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -1359,7 +1373,41 @@ def make_handler(board, vision, db, reg):
             s["vision"] = vision.snapshot()
             s["people"] = db.list()
             s["boot"] = BOOT_ID  # muda quando o programa reinicia: o painel reabre o vídeo
+            s["acesso"] = dict(acesso.snapshot(), remoto=self._remoto())
             return s
+
+        # ----- acesso pela internet (pc/acesso.py) -----
+        def _remoto(self):
+            """Veio pelo túnel (o cloudflared põe Cf-Connecting-Ip) ou por um Host que não é este PC."""
+            return bool(self.headers.get("Cf-Connecting-Ip")) or not host_local(self.headers.get("Host"))
+
+        def _token(self):
+            c = SimpleCookie()
+            try:
+                c.load(self.headers.get("Cookie") or "")
+            except CookieError:
+                return None
+            return c[COOKIE].value if COOKIE in c else None
+
+        def _liberado(self, path):
+            """True se a requisição pode seguir; senão já respondeu (login ou 401)."""
+            if not self._remoto() or acesso.sessao_ok(self._token()) or path in ("/login", "/api/login"):
+                return True
+            if path in ("/", "/index.html", "/relatorios"):
+                self._send(303, b"", "text/plain", headers={"Location": "/login"})
+            else:
+                self._send(401, {"error": "Faça login de novo", "login": True})
+            return False
+
+        def _origem_ok(self):
+            """POST de outro site (CSRF) é recusado: a Origin tem de ser este endereço ou o do túnel."""
+            origin = self.headers.get("Origin")
+            if not origin:
+                return True
+            ok = {(self.headers.get("Host") or "").lower()}
+            if acesso.tunel.url:
+                ok.add(urlparse(acesso.tunel.url).netloc)
+            return urlparse(origin).netloc.lower() in ok
 
         def _stream(self):
             self.send_response(200)
@@ -1389,7 +1437,14 @@ def make_handler(board, vision, db, reg):
             url = urlparse(self.path)
             path = url.path
             q = {k: v[0] for k, v in parse_qs(url.query).items()}
-            if path in ("/", "/index.html"):
+            if not self._liberado(path):
+                return
+            if path == "/login":
+                if self._remoto():
+                    self._send(200, LOGIN_FILE.read_bytes(), "text/html; charset=utf-8")
+                else:   # no próprio PC não precisa de senha
+                    self._send(303, b"", "text/plain", headers={"Location": "/"})
+            elif path in ("/", "/index.html"):
                 self._send(200, HTML_FILE.read_bytes(), "text/html; charset=utf-8")
             elif path == "/relatorios":
                 self._send(200, RELATORIO_FILE.read_bytes(), "text/html; charset=utf-8")
@@ -1445,6 +1500,29 @@ def make_handler(board, vision, db, reg):
                     raise ValueError
             except ValueError:
                 return self._send(400, {"error": "o corpo deve ser um objeto JSON"})
+            if not self._origem_ok():
+                return self._send(403, {"error": "Origem não permitida"})
+            if not self._liberado(path):
+                return
+            if path in ("/api/acesso", "/api/acesso/senha", "/api/encerrar") and self._remoto():
+                return self._send(403, {"error": "Isso só pode ser feito no próprio PC"})
+
+            if path == "/api/login":
+                ip = self.headers.get("Cf-Connecting-Ip") or self.client_address[0]
+                token, erro = acesso.login(ip, str(body.get("senha", "")))
+                if not token:
+                    return self._send(429 if "Espere" in erro else 401, {"error": erro})
+                return self._send(200, {"ok": True}, headers={"Set-Cookie":
+                    f"{COOKIE}={token}; Path=/; Max-Age={SESSAO_S}; HttpOnly; Secure; SameSite=Lax"})
+            if path == "/api/sair":
+                acesso.sair(self._token())
+                return self._send(200, {"ok": True}, headers={"Set-Cookie":
+                    f"{COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax"})
+            if path == "/api/encerrar":
+                self._send(200, {"ok": True})
+                print("Programa encerrado pelo painel.")
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                return
 
             def nome_ok(key):
                 """Nome limpo do corpo, ou (None, resposta de erro)."""
@@ -1543,6 +1621,16 @@ def make_handler(board, vision, db, reg):
                 name = q.get("name", "auto")
                 board.wanted = None if name.lower() == "auto" else name
                 board.released = False
+            elif path == "/api/acesso/senha":
+                try:
+                    acesso.definir_senha(str(body.get("senha", "")))
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
+            elif path == "/api/acesso":
+                try:
+                    acesso.set_tunel(q.get("tunel", "0") == "1")
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
             elif path == "/api/release":
                 board.released = True
             elif path == "/api/resume":
@@ -1571,7 +1659,8 @@ def main():
     board = Board(args.port)
     threading.Thread(target=sender, args=(board, vision), daemon=True).start()
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.http), make_handler(board, vision, db, reg))
+    acesso = Acesso(args.http)   # liga o túnel sozinho se estava ligado da última vez
+    server = ThreadingHTTPServer(("127.0.0.1", args.http), make_handler(board, vision, db, reg, acesso))
     url = f"http://localhost:{args.http}"
     print(f"Painel rodando em {url}  (Ctrl+C para sair)")
     if not args.no_browser:

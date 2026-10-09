@@ -225,6 +225,15 @@
 
 <script>
 const $ = id => document.getElementById(id);
+// Pela internet (pc/acesso.py) a sessão pode vencer: volta para o login
+{
+  const _fetch = window.fetch;
+  window.fetch = async (...args) => {
+    const r = await _fetch(...args);
+    if (r.status === 401 && !["localhost", "127.0.0.1"].includes(location.hostname)) location.href = "/login";
+    return r;
+  };
+}
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const iso = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 const brDate = s => s ? s.split("-").reverse().join("/") : "";

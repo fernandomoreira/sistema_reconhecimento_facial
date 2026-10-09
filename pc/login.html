@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Entrar · Monitoramento Interativo</title>
+<!--
+  Login de quem acessa pela internet (túnel do Cloudflare, pc/acesso.py).
+  No próprio PC (localhost) o painel abre direto, sem senha.
+-->
+<style>
+  :root{--bg:#0f1115; --card:#181b22; --line:#262a33; --txt:#e7e9ee; --muted:#8b92a1; --accent:#3b82f6}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;
+    background:var(--bg);color:var(--txt);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  form{width:100%;max-width:360px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
+  h1{margin:0 0 4px;font-size:19px}
+  p{margin:0 0 16px;color:var(--muted);font-size:13px}
+  input{width:100%;font:inherit;font-size:16px;color:var(--txt);background:#11141a;border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px}
+  input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.2)}
+  button{width:100%;margin-top:12px;font:inherit;font-weight:600;color:#fff;background:var(--accent);
+    border:1px solid var(--accent);border-radius:10px;padding:10px;cursor:pointer}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .err{min-height:1.4em;margin:10px 0 0;color:#fca5a5;font-size:13px}
+</style>
+</head>
+<body>
+<form id="f">
+  <h1>🔒 Programa de Monitoramento Interativo</h1>
+  <p>Acesso pela internet. Digite a senha definida no painel do PC.</p>
+  <input type="password" id="senha" placeholder="Senha" autocomplete="current-password" autofocus required>
+  <button id="btn">Entrar</button>
+  <p class="err" id="err"></p>
+</form>
+<script>
+const $ = id => document.getElementById(id);
+$("f").onsubmit = async e => {
+  e.preventDefault();
+  $("btn").disabled = true; $("err").textContent = "";
+  try {
+    const r = await fetch("/api/login", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({senha: $("senha").value})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "Não foi possível entrar");
+    location.href = "/";
+  } catch(e){
+    $("err").textContent = e.message; $("senha").select();
+  }
+  $("btn").disabled = false;
+};
+</script>
+</body>
+</html>

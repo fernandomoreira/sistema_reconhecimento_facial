@@ -8,3 +8,6 @@ pc/rostos/
 
 # banco das aparições (fotos e horários das pessoas: fica só neste PC)
 pc/dados/
+
+# cloudflared.exe (baixado sozinho quando o acesso pela internet liga)
+pc/bin/

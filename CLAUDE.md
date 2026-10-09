@@ -15,6 +15,7 @@ python -m platformio run -t upload       # grava (antes: "Liberar porta" no pain
 python pc/reconhecimento.py              # programa do PC + painel (abre o navegador)
 python pc/reconhecimento.py --no-browser --camera 1 --port COM12 --http 8000
 abrir_painel.bat                         # atalho para o usuário (instala dependências se faltar)
+instalar_atalho.bat [-Inicializar|-Remover]   # atalho na Área de Trabalho (pythonw pc\iniciar.pyw)
 ```
 
 Placa do usuário: ESP32 DevKit no **COM12** (CP210x, VID 10C4). Câmeras do PC: 0 = Lenovo FHD
@@ -142,15 +143,36 @@ ou `{"error":"..."}`); linhas sem `@` são log. Faixas: x,y −100..100; yaw −
   `dtr = rts = False` **antes** do `open()` (senão a placa reinicia), mandar `BEEP`/`TONE`/`VOL`,
   fechar e `POST /api/resume`.
 
+## Atalho, encerrar e acesso pela internet
+
+- Atalho da Área de Trabalho: `instalar_atalho.bat` → `pc/instalar_atalho.ps1` (**precisa de BOM
+  UTF-8**, senão o PowerShell 5.1 estraga os acentos) → `pythonw pc\iniciar.pyw`. O `iniciar.pyw`
+  só abre o navegador se `/api/alvo` responde; senão sobe `python.exe reconhecimento.py` com
+  `CREATE_NO_WINDOW`, saída em `pc/dados/programa.log`, e mostra MessageBox se fechar ao abrir.
+  `-Inicializar` põe outro atalho (com `--no-browser`) na pasta Inicializar.
+- **⏻ Encerrar** no topo do painel → `POST /api/encerrar` → `server.shutdown()` numa thread; o
+  `atexit` fecha as aparições e o cloudflared. A confirmação expira em 3 s (ao testar com o
+  Chrome, clique duas vezes rápido ou use `b.click()` em JS).
+- `pc/acesso.py` (`Acesso`, `Tunel`): senha PBKDF2 em `pc/dados/acesso.json` (+ `"tunel"`: religa
+  sozinho), sessões só na memória (cookie `sessao`, 7 dias, `Secure; SameSite=Lax`), bloqueio
+  de 10 min após 5 erros por IP. Túnel = `cloudflared tunnel --url` (quick tunnel, URL muda a
+  cada vez), exe em `pc/bin/` (gitignore) baixado sozinho.
+- No handler: `_remoto()` = tem `Cf-Connecting-Ip` **ou** Host não é localhost → `_liberado()`
+  exige sessão (páginas → 303 `/login`, API → 401). `/api/acesso*` e `/api/encerrar` → 403 se
+  remoto. `_origem_ok()` recusa POST com `Origin` de outro site. As páginas trocam `fetch` para
+  ir ao `/login` num 401 quando não estão em localhost.
+- Testar o túnel com senha **temporária** e depois apagar `pc/dados/acesso.json`.
+
 ## Layout do painel
 
 Câmera e emoji (largo) → Cadastrar · Captura automática · Expressão (lado a lado) → Pessoas
-cadastradas (largo, cartões na horizontal) → Últimas aparições (largo) → Informações técnicas.
+cadastradas (largo, cartões na horizontal) → Últimas aparições (largo) → Acesso pela internet
+(largo) → Informações técnicas. Botão ⏻ Encerrar no cabeçalho, ao lado dos indicadores.
 
 ## Dados pessoais
 
-`pc/rostos/` (fotos e vetores dos rostos) e `pc/dados/` (aparições) ficam **só no PC** e estão
-no `.gitignore`. Nunca versionar. Os modelos `.onnx` em `pc/modelos/` são baixados sozinhos se faltarem
+`pc/rostos/` (fotos e vetores dos rostos) e `pc/dados/` (aparições, senha do acesso, log) ficam
+**só no PC** e estão no `.gitignore`. Nunca versionar. Os modelos `.onnx` em `pc/modelos/` são baixados sozinhos se faltarem
 (`ensure_models()`), mas estão versionados para funcionar offline.
 
 ## Testes
