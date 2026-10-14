@@ -6,6 +6,7 @@
 // O ESP32 desenha no OLED um emoji que imita esses movimentos:
 //   leds     -> indicam se tem alguém e se a pessoa é conhecida
 //   buzzer   -> beeps (GPIO 23) pedidos pelo PC
+//   cabeca   -> 2 motores de passo que viram uma cabeça física como o emoji
 //   display  -> liga o OLED
 //   face     -> anima e desenha o emoji
 //   pc_link  -> recebe os comandos do PC pela serial
@@ -13,6 +14,7 @@
 #include <Arduino.h>
 
 #include "buzzer.h"
+#include "cabeca.h"
 #include "display.h"
 #include "face.h"
 #include "leds.h"
@@ -33,11 +35,13 @@ void setup() {
 
   displayBegin();
   faceBegin();  // começa dormindo até aparecer alguém na câmera
+  cabecaBegin();
 }
 
 void loop() {
   pcLinkLoop();
   faceLoop();
   buzzerLoop();
+  cabecaLoop();
   delay(1);  // pequena pausa: deixa o processador "respirar"
 }

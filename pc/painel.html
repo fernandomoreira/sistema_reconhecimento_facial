@@ -129,6 +129,17 @@
 
   .moods{display:flex;gap:8px;flex-wrap:wrap}
 
+  /* --- Cabeça física (motores de passo) --- */
+  .cabpos{display:flex;gap:16px;margin-top:12px;font-size:14px;color:var(--muted)}
+  .cabpos b{color:var(--txt);font-family:ui-monospace,Consolas,monospace;font-size:16px}
+  .jog{display:grid;grid-template-columns:repeat(3,44px);gap:6px;justify-content:start}
+  .jog .btn{padding:8px 0;text-align:center}
+  .cabcfg{display:grid;grid-template-columns:auto 90px;gap:8px 12px;align-items:center;margin-top:10px;font-size:14px}
+  .cabcfg input[type=number]{font:inherit;color:var(--txt);background:#11141a;border:1px solid var(--line);
+    border-radius:10px;padding:6px 10px;width:100%}
+  .cabcfg label.ck{grid-column:1/-1;display:flex;gap:8px;align-items:center}
+  details.cab summary{cursor:pointer;margin-top:12px;color:var(--muted);font-size:14px}
+
   /* --- LEDs (só indicação) --- */
   .leds{display:grid;gap:8px;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:10px}
   @media (max-width:520px){ .leds{grid-template-columns:1fr} }
@@ -267,6 +278,46 @@
     <p class="hint">No <b>Automático</b>: 😮 surpreso quando alguém aparece, 😄 feliz para pessoas
       cadastradas (o nome aparece no visor) e 🤨 curioso para desconhecidos. Sem ninguém na câmera
       ele procura (olha para os lados) e depois de 8 s dorme 😴.</p>
+  </section>
+
+  <!-- Cabeça física: 2 motores 28BYJ-48 (src/cabeca.cpp) -->
+  <section class="card">
+    <h2>🗿 Cabeça física <span class="badge bad" id="cabBadge">Sem placa</span></h2>
+    <label class="switch">
+      <input type="checkbox" id="cabSw" role="switch">
+      <span class="slider"></span>
+      <span>Seguir o emoji: <b id="cabTxt">Não</b></span>
+    </label>
+    <div class="cabpos">
+      <span>Horizontal (X) <b id="cabX">—</b></span>
+      <span>Vertical (Y) <b id="cabY">—</b></span>
+    </div>
+    <div class="row" id="cabMan">
+      <div class="jog">
+        <span></span><button class="btn" data-dx="0" data-dy="1" title="Para cima">▲</button><span></span>
+        <button class="btn" data-dx="-1" data-dy="0" title="Para a esquerda">◀</button>
+        <button class="btn" id="cabZero" title="A posição atual vira o centro">🎯</button>
+        <button class="btn" data-dx="1" data-dy="0" title="Para a direita">▶</button>
+        <span></span><button class="btn" data-dx="0" data-dy="-1" title="Para baixo">▼</button><span></span>
+      </div>
+      <select id="cabPasso" style="flex:none;width:auto" title="Quanto cada clique move">
+        <option value="1">1°</option><option value="5" selected>5°</option><option value="15">15°</option><option value="45">45°</option>
+      </select>
+    </div>
+    <details class="cab">
+      <summary>⚙️ Ajustes dos motores</summary>
+      <div class="cabcfg">
+        <span>Giro máximo para os lados (°)</span><input type="number" id="cabLimX" min="5" max="180">
+        <span>Giro máximo para cima/baixo (°)</span><input type="number" id="cabLimY" min="5" max="90">
+        <span>Velocidade (meios-passos/s)</span><input type="number" id="cabVel" min="100" max="1000" step="50">
+        <label class="ck"><input type="checkbox" id="cabInvX"> Inverter o motor horizontal (X)</label>
+        <label class="ck"><input type="checkbox" id="cabInvY"> Inverter o motor vertical (Y)</label>
+      </div>
+      <div class="row"><button class="btn" id="cabSalvar">💾 Salvar ajustes</button></div>
+    </details>
+    <p class="hint">Ao ligar a placa, a posição da cabeça vira o <b>centro</b>. Se ela ficar torta, desligue
+      o “seguir”, acerte com as setas e clique em 🎯. Motor X nos GPIO 32/33/25/26, motor Y nos GPIO
+      16/17/18/19; os ULN2003 precisam de uma fonte de 5 V própria (com GND ligado ao do ESP32).</p>
   </section>
 
   <!-- Pessoas -->
@@ -768,6 +819,53 @@ $("autoSw").onchange = setAuto;
 document.querySelectorAll('input[name="autoModo"]').forEach(r => r.onchange = setAuto);
 
 // ===========================================================================
+// Cabeça física (comandos CAB da placa)
+// ===========================================================================
+let cabLock = 0;   // ignora o status por um instante depois de mexer no botão
+function renderCab(b){
+  const c = b && b.cab;
+  const ok = !!c;
+  $("cabBadge").className = "badge " + (!ok ? "bad" : c.on ? "ok" : "warn");
+  $("cabBadge").textContent = !ok ? (b ? "Firmware antigo" : "Sem placa") : c.on ? (c.mov ? "Seguindo · andando" : "Seguindo")
+    : c.mov ? "Andando" : "Parada";
+  if (Date.now() > cabLock) $("cabSw").checked = ok && c.on;
+  $("cabSw").disabled = !ok;
+  $("cabTxt").textContent = $("cabSw").checked ? "Sim" : "Não";
+  $("cabTxt").className = $("cabSw").checked ? "sim" : "";
+  $("cabX").textContent = ok ? `${c.x.toFixed(1)}°` : "—";
+  $("cabY").textContent = ok ? `${c.y.toFixed(1)}°` : "—";
+  const manual = ok && !$("cabSw").checked;
+  document.querySelectorAll("#cabMan .btn").forEach(x => x.disabled = !manual);
+  $("cabMan").title = manual ? "" : "Desligue o “seguir” para mover à mão";
+  $("cabSalvar").disabled = !ok;
+  // Preenche os ajustes quando mudam na placa (sem atrapalhar quem está digitando)
+  const key = ok ? [c.limX, c.limY, c.vel, c.invX, c.invY].join() : "";
+  if (ok && key !== renderCab.key && !document.activeElement.closest(".cabcfg")) {
+    renderCab.key = key;
+    $("cabLimX").value = c.limX; $("cabLimY").value = c.limY; $("cabVel").value = c.vel;
+    $("cabInvX").checked = c.invX; $("cabInvY").checked = c.invY;
+  }
+}
+const cabPost = (body, falha) => post("/api/cabeca", falha, body);
+$("cabSw").onchange = () => {
+  cabLock = Date.now() + 1500;
+  $("cabTxt").textContent = $("cabSw").checked ? "Sim" : "Não";
+  cabPost({acao: $("cabSw").checked ? "on" : "off"}, "Falha ao ligar/desligar a cabeça");
+};
+document.querySelectorAll("#cabMan .btn[data-dx]").forEach(btn => btn.onclick = () => {
+  const passo = +$("cabPasso").value;
+  cabPost({acao: "mover", dx: +btn.dataset.dx * passo, dy: +btn.dataset.dy * passo}, "Falha ao mover a cabeça");
+});
+$("cabZero").onclick = async () => {
+  if (await cabPost({acao: "zero"}, "Falha ao definir o centro")) toast("Posição atual agora é o centro", true);
+};
+$("cabSalvar").onclick = async () => {
+  const body = {acao: "cfg", limX: +$("cabLimX").value, limY: +$("cabLimY").value, vel: +$("cabVel").value,
+                invX: $("cabInvX").checked, invY: $("cabInvY").checked};
+  if (await cabPost(body, "Falha ao salvar os ajustes")) toast("Ajustes da cabeça salvos na placa", true);
+};
+
+// ===========================================================================
 // Status geral (1x por segundo)
 // ===========================================================================
 function buildMoods(){
@@ -981,6 +1079,7 @@ function render(s){
   $("lastAns").textContent = s.lastAnswerAgo != null && s.portOpen ? `há ${s.lastAnswerAgo.toFixed(1)} s` : "—";
   $("relBtn").textContent  = s.released ? "Reconectar" : "Liberar porta";
   [...$("leds").children].forEach((el, i) => el.classList.toggle("on", !!(b && b.leds[i] === 1)));
+  renderCab(b);
 
   const sel = $("portSel");
   if (document.activeElement !== sel) {

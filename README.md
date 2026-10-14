@@ -45,6 +45,7 @@ pessoa na câmera. Rosto e foto desfocados no print por privacidade.</sub>
 | 😄 **Expressões automáticas** | surpreso quando alguém aparece, feliz para conhecidos, curioso para desconhecidos, dorme sozinho |
 | 💡 **3 LEDs indicadores** | 🟡 alguém na câmera · 🟢 alguém cadastrado · 🔴 alguém não reconhecido (podem acender juntos) |
 | 🔊 **Buzzer** | beep quando alguém aparece, beeps de continuidade durante a captura automática e sinal ao terminar; volume e mudo pelo painel |
+| 🗿 **Cabeça física** | 2 motores de passo 28BYJ-48 viram uma cabeça de verdade junto com o emoji (lados e cima/baixo); ajustes e movimento manual pelo painel |
 | 🤖 **Captura automática** | cadastra sozinho quem não é reconhecido (qualquer pessoa, ou só quem olhar fixo para a câmera) como “Desconhecido 1, 2…”; o nome é editado depois |
 | 🖥️ **Painel web** | câmera ao vivo, prévia do emoji, cadastro de pessoas, busca de câmeras, estado da placa |
 | 🕒 **Registro de aparições** | banco SQLite com toda pessoa que passou pela câmera, quando entrou, quando saiu e por quanto tempo; as 5 últimas aparecem no painel |
@@ -123,6 +124,8 @@ viram emoji **as mais perto da câmera**, mostradas da esquerda para a direita.
 | Display OLED SSD1306 128x64 I2C (endereço 0x3C) | 1 |
 | LEDs 5 mm (amarelo, verde, vermelho) + resistores 220 Ω | 3 |
 | Buzzer passivo (no GPIO 23) | 1 |
+| Motor de passo 28BYJ-48 (5 V) + driver ULN2003 (cabeça física, opcional) | 2 |
+| Fonte de 5 V / 1 A para os motores | 1 |
 | Webcam (a do notebook serve; aceita várias) | 1+ |
 
 | OLED | ESP32 | | LED | GPIO | Acende quando |
@@ -261,6 +264,36 @@ ligado entre as execuções até você desligar.
 > A fonte do OLED (CP437) tem á é í ó ú â ê ô à ç ü ñ, mas não tem ã, õ e a maioria das
 > maiúsculas acentuadas: essas aparecem sem acento (João → Joao).
 
+### 🗿 Cabeça física (2 motores de passo)
+
+Os dois motores imitam o emoji principal (o da pessoa mais perto da câmera): o **X** vira a
+cabeça para os lados (yaw) e o **Y** olha para cima/baixo (pitch). Sem ninguém na câmera ela
+procura e depois abaixa para "dormir", igual ao emoji.
+
+| ULN2003 | Motor X (horizontal) | Motor Y (vertical) |
+|---|---|---|
+| IN1 | GPIO 32 | GPIO 16 |
+| IN2 | GPIO 33 | GPIO 17 |
+| IN3 | GPIO 25 | GPIO 18 |
+| IN4 | GPIO 26 | GPIO 19 |
+| + (5–12 V) | 5 V da fonte externa | 5 V da fonte externa |
+| − | GND da fonte **e** GND do ESP32 | GND da fonte **e** GND do ESP32 |
+
+> [!WARNING]
+> Cada 28BYJ-48 puxa ~250 mA: **não** alimente os motores pelo 3V3 do ESP32. Use uma fonte de
+> 5 V própria e ligue o GND dela ao GND do ESP32 (sem terra comum os motores não andam).
+
+- Os motores andam em **meio passo** (4096 passos por volta), com aceleração, numa tarefa no
+  núcleo 0 do ESP32 (o desenho do OLED não atrapalha). Parados por 1,5 s, as bobinas são
+  desligadas para não esquentar.
+- **Não há fim de curso**: a posição da cabeça ao ligar a placa é o **centro**. Se ela ficar
+  torta, no painel desligue o "Seguir o emoji", acerte com as setas e clique em 🎯.
+- Em **⚙️ Ajustes dos motores** (painel): giro máximo para os lados e para cima/baixo (o
+  emoji virado ao máximo = esse ângulo), velocidade e inverter o sentido de cada motor. Os
+  ajustes e o "seguir" ficam salvos na placa.
+- Desligar o "seguir" leva a cabeça de volta ao centro: faça isso antes de tirar a energia,
+  para ela ligar já centralizada da próxima vez.
+
 ## 📡 Protocolo serial
 
 O PC manda uma linha por comando a **115200 baud**; respostas começam com `@` + JSON. Linhas
@@ -276,13 +309,17 @@ sem `@` são log.
 | `NAME <texto>` | nome só da 1ª pessoa (`NAME` sozinho apaga) |
 | `BEEP <tipo>` | som no buzzer, **sem resposta**: 1 = pessoa apareceu, 2 = tique da captura automática, 3 = captura terminada |
 | `VOL <0..100>` | volume do buzzer (0 = mudo); responde o estado (campo `vol`) |
+| `CAB ON` / `CAB OFF` | cabeça física segue o emoji / volta ao centro e para (salvo na placa) |
+| `CAB ZERO` | a posição atual dos motores vira o centro (só com `CAB OFF`) |
+| `CAB MOVER <dx> <dy>` | move a cabeça à mão, em graus (−360..360; só com `CAB OFF`) |
+| `CAB CFG <limX> <limY> <invX> <invY> <vel>` | giro máximo (X 5..180°, Y 5..90°), inverter (0/1) e velocidade (100..1000 meios-passos/s), salvos na placa |
 | `TONE <freq> <ms>` | tom avulso para testar o buzzer (100..10000 Hz, até 3000 ms; sem resposta). `freq` 0 = pino ligado direto (teste de buzzer ativo) |
 
 <details>
 <summary><b>Exemplo de respostas e teste pelo Monitor Serial</b></summary>
 
 ```
-@{"fw":"rosto-esp32","ver":3,"uptime":97,"oled":true,"state":"seguindo","count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","","","","","","",""],"fps":30,"looks":590,"leds":[1,1,1],"vol":100}
+@{"fw":"rosto-esp32","ver":4,"uptime":97,"oled":true,"state":"seguindo","count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","","","","","","",""],"fps":30,"looks":590,"leds":[1,1,1],"vol":100,"cab":{"on":true,"x":12.3,"y":-4.0,"ax":12.5,"ay":-4.0,"mov":true,"limX":60,"limY":30,"invX":false,"invY":false,"vel":600,"n":3}}
 @{"error":"comando desconhecido"}
 ```
 
@@ -309,6 +346,8 @@ Expressões (`mood`): 0 Neutro, 1 Feliz, 2 Curioso, 3 Surpreso, 4 Bravo, 5 Trist
 | POST | `/api/remover?nome=...` | apaga uma pessoa |
 | POST | `/api/renomear` (corpo `{"nome": "...", "novo": "...", "juntar": false}`) | troca o nome (409 se já existe e `juntar` é falso) |
 | POST | `/api/som?vol=0..100` | volume dos beeps do buzzer da placa (0 = mudo) |
+| POST | `/api/cabeca` `{"acao": "on"\|"off"\|"zero"\|"mover", "dx": 5, "dy": 0}` | cabeça física: seguir, parar, definir o centro, mover à mão (graus) |
+| POST | `/api/cabeca` `{"acao": "cfg", "limX": 60, "limY": 30, "invX": false, "invY": false, "vel": 600}` | ajustes dos motores |
 | POST | `/api/auto?on=0\|1&modo=qualquer\|especifico` | captura automática de desconhecidos |
 | POST | `/api/humor?id=-1..5` | −1 = automático |
 | POST | `/api/calibrar` | posição atual = cabeça reta |
@@ -366,6 +405,7 @@ sistema_reconhecimento_facial/
 │   ├── face.h/.cpp         # animação e desenho do emoji 3D + lógica dos LEDs
 │   ├── leds.h/.cpp         # LEDs indicadores
 │   ├── buzzer.h/.cpp       # beeps no GPIO 23 (PWM, com volume, sem travar o loop)
+│   ├── cabeca.h/.cpp       # cabeça física: 2 motores 28BYJ-48 que imitam o emoji
 │   └── pc_link.h/.cpp      # comandos recebidos do PC pela serial
 └── pc/                     # programa do PC
     ├── reconhecimento.py   # câmera, reconhecimento, serial e servidor do painel

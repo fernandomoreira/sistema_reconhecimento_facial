@@ -33,6 +33,9 @@ Rotas da API local:
                                       captura automática de desconhecidos (salvos como
                                       "Desconhecido N"); especifico = só quem olhar fixo
     POST /api/som?vol=0..100          volume dos beeps do buzzer da placa (0 = mudo)
+    POST /api/cabeca {"acao": "on" | "off" | "zero" | "mover", "dx": graus, "dy": graus}
+    POST /api/cabeca {"acao": "cfg", "limX": 5..180, "limY": 5..90, "invX": bool, "invY": bool,
+                      "vel": 100..1000}  cabeça física (2 motores de passo na placa)
     POST /api/humor?id=-1..5          -1 = automático; 0..5 = expressão fixa
     POST /api/calibrar                "de frente para a câmera" = cabeça reta
     POST /api/espelhar?on=0|1         espelha a imagem (o emoji imita como espelho)
@@ -1316,6 +1319,27 @@ def sender(board, vision):
             board.send("IDLE")
 
 
+def cabeca_cmd(body):
+    """Corpo do /api/cabeca -> (comando CAB para a placa, erro)."""
+    acao = str(body.get("acao", ""))
+    try:
+        if acao in ("on", "off", "zero"):
+            return f"CAB {acao.upper()}", None
+        if acao == "mover":
+            dx, dy = int(body.get("dx", 0)), int(body.get("dy", 0))
+            if abs(dx) > 360 or abs(dy) > 360:
+                raise ValueError
+            return f"CAB MOVER {dx} {dy}", None
+        if acao == "cfg":
+            lx, ly, vel = int(body["limX"]), int(body["limY"]), int(body["vel"])
+            if not (5 <= lx <= 180 and 5 <= ly <= 90 and 100 <= vel <= 1000):
+                return None, "Giro X de 5 a 180°, giro Y de 5 a 90° e velocidade de 100 a 1000"
+            return f"CAB CFG {lx} {ly} {int(bool(body.get('invX')))} {int(bool(body.get('invY')))} {vel}", None
+    except (KeyError, TypeError, ValueError):
+        return None, "Valores inválidos para a cabeça"
+    return None, "acao deve ser on, off, zero, mover ou cfg"
+
+
 # ===========================================================================
 # Servidor HTTP do painel
 # ===========================================================================
@@ -1603,6 +1627,17 @@ def make_handler(board, vision, db, reg, acesso):
                 vision.volume = int(vol)
                 if not vision.volume:
                     vision.beeps.clear()
+            elif path == "/api/cabeca":
+                cmd, err = cabeca_cmd(body)
+                if err:
+                    return self._send(400, {"error": err})
+                # Só vale a resposta em que o contador de comandos CAB já mudou: um
+                # STATUS automático que chegue no meio ainda mostra o estado antigo
+                with board.lock:
+                    antes = ((board.status or {}).get("cab") or {}).get("n")
+                _, err = board.command(cmd, lambda r: "cab" in r and r["cab"].get("n") != antes)
+                if err:
+                    return self._send(409 if err.startswith("Placa:") else 503, {"error": err})
             elif path == "/api/espelhar":
                 vision.mirror = q.get("on", "1") == "1"
             elif path == "/api/camera":

@@ -78,3 +78,7 @@ uint8_t     faceCount();             // emojis na tela agora
 uint8_t     faceMood();              // expressão do 1º emoji
 const char* faceName(uint8_t i = 0); // nome da pessoa i
 uint8_t     faceFps();
+
+// Pose do emoji principal como está na tela agora (já suavizada), em graus:
+// o da pessoa mais perto da câmera. Usada pela cabeça física (cabeca.cpp)
+void faceHeadPose(float& yawDeg, float& pitchDeg);

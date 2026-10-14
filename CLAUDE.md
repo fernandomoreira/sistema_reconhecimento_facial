@@ -31,6 +31,7 @@ Webcam ─► pc/reconhecimento.py ──USB serial 115200──► ESP32 ──
 
 - `src/main.cpp` junta os módulos; `display.*` liga o OLED (SDA 21, SCL 22, 0x3C, cp437);
   `leds.*` pinos 5/4/15; `buzzer.*` GPIO 23 (PWM LEDC, sons sem delay, `buzzerLoop()`);
+  `cabeca.*` 2 motores 28BYJ-48 (ULN2003): X 32/33/25/26, Y 16/17/18/19;
   `pc_link.*` interpreta a serial; `face.*` anima e desenha o emoji.
 - `pc/reconhecimento.py` (arquivo único): `Board` (serial, reconexão automática), `FaceDB`
   (`pc/rostos/pessoas.json` + fotos), `Vision` (thread da câmera: detecção, tracking, votos de
@@ -45,8 +46,9 @@ Webcam ─► pc/reconhecimento.py ──USB serial 115200──► ESP32 ──
 `NAMES a|b|c` (nomes cp437 na ordem do M) · `NAME <texto>` (só a 1ª) ·
 `BEEP 1|2|3` (sem resposta: pessoa apareceu, tique da captura automática, fim da captura) ·
 `VOL 0..100` (volume do buzzer, 0 = mudo; responde o STATUS) ·
-`TONE freq ms` (teste, sem resposta; freq 0 = pino ligado direto, como num buzzer ativo).
-Respostas: `@` + JSON (`{"fw":"rosto-esp32","ver":3,"count":n,"names":[8 nomes],...,"vol":100}`
+`TONE freq ms` (teste, sem resposta; freq 0 = pino ligado direto, como num buzzer ativo) ·
+`CAB ON|OFF|ZERO|MOVER dx dy|CFG limX limY invX invY vel` (cabeça física; responde o STATUS).
+Respostas: `@` + JSON (`{"fw":"rosto-esp32","ver":4,"count":n,"names":[8 nomes],...,"vol":100,"cab":{...}}`
 ou `{"error":"..."}`); linhas sem `@` são log. Faixas: x,y −100..100; yaw −60..60; pitch, roll
 −45..45; size 0..100; mood 0..5.
 
@@ -143,6 +145,18 @@ ou `{"error":"..."}`); linhas sem `@` são log. Faixas: x,y −100..100; yaw −
   `dtr = rts = False` **antes** do `open()` (senão a placa reinicia), mandar `BEEP`/`TONE`/`VOL`,
   fechar e `POST /api/resume`.
 
+## Cabeça física (2 motores de passo)
+
+- `src/cabeca.cpp`: meio passo (4096/volta), aceleração `ACEL`, tarefa FreeRTOS no **núcleo 0**
+  (`vTaskDelay(1)` = 1 ms; o `loop()` com o OLED fica no núcleo 1). Bobinas soltas após
+  `SOLTAR_MS` parado. `cabecaLoop()` (núcleo 1, a cada 20 ms) lê `faceHeadPose()` (pose suavizada
+  do maior emoji, inclusive procurando/dormindo) e mapeia yaw ±60 → ±`limX`, pitch ±45 → ±`limY`.
+- Sem fim de curso: posição ao ligar = centro. `CAB ZERO`/`MOVER` só com o seguir desligado.
+  Configuração (`on`, `limX`, `limY`, `invX`, `invY`, `vel`) em NVS (`Preferences` "cabeca").
+- PC: `/api/cabeca` → `cabeca_cmd()` → `board.command("CAB ...")`. Painel: card “🗿 Cabeça
+  física” (`renderCab()`), lê `status.board.cab`. O `cab.n` conta os CAB executados: o `/api/cabeca` só aceita a resposta
+  em que o `n` mudou (um STATUS automático no meio traria o estado antigo).
+
 ## Atalho, encerrar e acesso pela internet
 
 - Atalho da Área de Trabalho: `instalar_atalho.bat` → `pc/instalar_atalho.ps1` (**precisa de BOM
@@ -165,7 +179,7 @@ ou `{"error":"..."}`); linhas sem `@` são log. Faixas: x,y −100..100; yaw −
 
 ## Layout do painel
 
-Câmera e emoji (largo) → Cadastrar · Captura automática · Expressão (lado a lado) → Pessoas
+Câmera e emoji (largo) → Cadastrar · Captura automática · Expressão · Cabeça física (lado a lado) → Pessoas
 cadastradas (largo, cartões na horizontal) → Últimas aparições (largo) → Acesso pela internet
 (largo) → Informações técnicas. Botão ⏻ Encerrar no cabeçalho, ao lado dos indicadores.
 

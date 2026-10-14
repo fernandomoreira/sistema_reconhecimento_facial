@@ -4,11 +4,12 @@
 #include "pc_link.h"
 
 #include "buzzer.h"
+#include "cabeca.h"
 #include "display.h"
 #include "face.h"
 #include "leds.h"
 
-static const uint8_t FW_VERSION = 3;
+static const uint8_t FW_VERSION = 4;
 // M com 8 pessoas: "M 8" + 8 x 8 números (~300 letras); NAMES: 8 nomes de 20
 static const size_t  MAX_LINE   = 400;
 
@@ -16,6 +17,8 @@ static char     line[MAX_LINE];
 static size_t   lineLen  = 0;
 static bool     overflow = false;  // linha maior que o buffer: descarta
 static uint32_t looks    = 0;      // conta os comandos L/M recebidos
+static uint32_t cabCmds  = 0;      // conta os comandos CAB executados ("n" no STATUS): o PC
+                                   // sabe que a resposta já é de depois do comando dele
 
 static void sendStatus() {
   Serial.printf("@{\"fw\":\"rosto-esp32\",\"ver\":%u,\"uptime\":%lu,\"oled\":%s,"
@@ -30,7 +33,12 @@ static void sendStatus() {
     Serial.print(i ? "," : "");
     Serial.print(ledGet(i) ? 1 : 0);
   }
-  Serial.printf("],\"vol\":%u}\n", buzzerVolume());
+  const CabecaCfg& c = cabecaCfg();
+  Serial.printf("],\"vol\":%u,\"cab\":{\"on\":%s,\"x\":%.1f,\"y\":%.1f,\"ax\":%.1f,\"ay\":%.1f,"
+                "\"mov\":%s,\"limX\":%u,\"limY\":%u,\"invX\":%s,\"invY\":%s,\"vel\":%u,\"n\":%lu}}\n",
+                buzzerVolume(), c.on ? "true" : "false", cabecaAngulo(0), cabecaAngulo(1),
+                cabecaAlvo(0), cabecaAlvo(1), cabecaAndando() ? "true" : "false", c.limX, c.limY,
+                c.invX ? "true" : "false", c.invY ? "true" : "false", c.vel, (unsigned long)cabCmds);
 }
 
 static void sendError(const char* msg) {
@@ -55,6 +63,43 @@ static void sanitize(char* s) {
   for (char* c = s; *c; c++) {
     if (*c == '"' || *c == '\\') *c = '?';
   }
+}
+
+// CAB ON | CAB OFF | CAB ZERO | CAB MOVER dx dy | CAB CFG limX limY invX invY vel
+static void runCabeca(const char* args) {
+  while (*args == ' ') args++;
+  char sub[8] = {0};
+  for (uint8_t i = 0; i < sizeof(sub) - 1 && args[i] && args[i] != ' '; i++) sub[i] = toupper(args[i]);
+  args += strlen(sub);
+
+  if (strcmp(sub, "ON") == 0 || strcmp(sub, "OFF") == 0) {
+    cabecaLigar(sub[1] == 'N');
+  } else if (strcmp(sub, "ZERO") == 0) {
+    if (cabecaCfg().on) { sendError("desligue o seguir antes de definir o centro"); return; }
+    cabecaZerar();
+  } else if (strcmp(sub, "MOVER") == 0) {
+    long dx, dy;
+    if (!readInt(args, dx) || !readInt(args, dy) || abs(dx) > 360 || abs(dy) > 360) {
+      sendError("use CAB MOVER dx dy (graus, -360..360)");
+      return;
+    }
+    if (!cabecaMover(dx, dy)) { sendError("desligue o seguir antes de mover a mao"); return; }
+  } else if (strcmp(sub, "CFG") == 0) {
+    long v[5];
+    for (int i = 0; i < 5; i++) {
+      if (!readInt(args, v[i])) { sendError("use CAB CFG limX limY invX invY vel"); return; }
+    }
+    if (v[0] < 5 || v[0] > 180 || v[1] < 5 || v[1] > 90 || v[4] < 100 || v[4] > 1000) {
+      sendError("limX 5..180, limY 5..90, vel 100..1000");
+      return;
+    }
+    cabecaConfigurar({cabecaCfg().on, (uint8_t)v[0], (uint8_t)v[1], v[2] != 0, v[3] != 0, (uint16_t)v[4]});
+  } else {
+    sendError("use CAB ON|OFF|ZERO|MOVER|CFG");
+    return;
+  }
+  cabCmds++;
+  sendStatus();
 }
 
 static void runCommand(char* cmd) {
@@ -104,6 +149,8 @@ static void runCommand(char* cmd) {
     buzzerSetVolume((uint8_t)v);
     Serial.printf("[PC] Volume do buzzer: %ld%%\n", v);
     sendStatus();
+  } else if (strncmp(cmd, "CAB ", 4) == 0) {
+    runCabeca(args);
   } else if (strcmp(cmd, "IDLE") == 0) {
     faceIdle();
   } else if (strcmp(cmd, "NAMES") == 0 || strncmp(cmd, "NAMES ", 6) == 0) {

@@ -509,3 +509,12 @@ const char* faceName(uint8_t i) {
 uint8_t faceFps() {
   return fps;
 }
+
+void faceHeadPose(float& yawDeg, float& pitchDeg) {
+  uint8_t best = 0;   // o maior emoji = a pessoa mais perto
+  for (uint8_t i = 1; i < count; i++) {
+    if (slots[i].tgt.r > slots[best].tgt.r) best = i;
+  }
+  yawDeg   = slots[best].cur.yaw / DEG;
+  pitchDeg = slots[best].cur.pitch / DEG;
+}

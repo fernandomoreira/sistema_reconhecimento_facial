@@ -19,13 +19,23 @@
 //   TONE <freq> <ms>                        -> tom avulso (100..10000 Hz, até 3000 ms), para
 //                                              teste; freq 0 = pino ligado direto (buzzer ativo)
 //   VOL <0..100>                            -> volume do buzzer (0 = mudo); responde o STATUS
+//   CAB ON | CAB OFF                        -> cabeça física segue o emoji / volta ao centro
+//   CAB ZERO                                -> posição atual dos motores = centro (com OFF)
+//   CAB MOVER <dx> <dy>                     -> move à mão, em graus (-360..360, com OFF)
+//   CAB CFG <limX> <limY> <invX> <invY> <vel>
+//                                           -> giro máximo (X 5..180, Y 5..90 graus), inverter
+//                                              (0/1) e velocidade (100..1000 meios-passos/s),
+//                                              salvos na flash. Todos os CAB respondem o STATUS
 //
 // Respostas começam com '@' seguido de JSON:
-//   @{"fw":"rosto-esp32","ver":3,"uptime":12,"oled":true,"state":"seguindo",
+//   @{"fw":"rosto-esp32","ver":4,"uptime":12,"oled":true,"state":"seguindo",
 //     "count":2,"max":8,"mood":1,"name":"Ana","names":["Ana","",...],
-//     "fps":29,"looks":350,"leds":[1,1,1],"vol":100}
+//     "fps":29,"looks":350,"leds":[1,1,1],"vol":100,
+//     "cab":{"on":true,"x":12.3,"y":-4.0,"ax":12.5,"ay":-4.0,"mov":true,
+//            "limX":60,"limY":30,"invX":false,"invY":false,"vel":600,"n":3}}
 //   (vol = volume do buzzer; state = seguindo | procurando | dormindo; count = emojis na tela;
-//    looks conta os comandos L/M)
+//    looks conta os comandos L/M; cab = cabeça física: x/y = ângulo atual dos motores,
+//    ax/ay = alvo, mov = algum motor andando, n = quantos comandos CAB já foram executados)
 //   @{"error":"mensagem"}
 // Linhas sem '@' são apenas mensagens de log.
 // ===========================================================================
